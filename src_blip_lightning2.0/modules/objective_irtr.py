@@ -74,7 +74,6 @@ def val_irtr(pl_module, data_loader):
                                     )
         score = pl_module.itm_head(output.last_hidden_state[:, 0, :])[:, 1]
         score_matrix_i2t[start + i, topk_idx] = score + topk_sim
-        break
 
     sims_matrix = sims_matrix.t()
     score_matrix_t2i = torch.full((len(texts), len(data_loader.dataset.all_texts)), -100.0).to(device)
@@ -97,7 +96,6 @@ def val_irtr(pl_module, data_loader):
                                     )
         score = pl_module.itm_head(output.last_hidden_state[:, 0, :])[:, 1]
         score_matrix_t2i[start + i, topk_idx] = score + topk_sim
-        break
 
     # if dist.distributed_available():
     #     pl_module.trainer.strategy.barrier()
