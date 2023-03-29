@@ -86,6 +86,9 @@ class BLIPModule(pl.LightningModule):
     def forward(self, batch, phase):
         return objective_irtr.train_irtr(self, batch, phase)
 
+    def on_fit_start(self) -> None:
+        print('============================ FIT LOOP ===================================')
+
     def on_train_epoch_start(self) -> None:
         config = self.hparams.config
         model_utils.cosine_lr_schedule(self.trainer.optimizers[0], self.current_epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
@@ -104,6 +107,9 @@ class BLIPModule(pl.LightningModule):
     def on_train_epoch_end(self) -> None:
         model_utils.epoch_wrapup(self, phase='train')
 
+    def on_validation_start(self) -> None:
+        print('============================ VALIDATION LOOP ===================================')
+
     def validation_step(self, batch, batch_idx):
         pass
         # model_utils.set_tasks(self)
@@ -118,6 +124,8 @@ class BLIPModule(pl.LightningModule):
         # all_preds = torch.stack(self.validation_step_outputs)
         model_utils.epoch_wrapup(self, phase='val')
 
+    def on_test_start(self) -> None:
+        print('============================ TEST LOOP ===================================')
 
     def test_step(self, batch, batch_idx):
         pass
