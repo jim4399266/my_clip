@@ -114,4 +114,6 @@ if __name__ == '__main__':
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
     if args.debug:
         config['fast_dev_run'] = 2
+        # 测试merge
+        print('this is branch dev')
     main(args, config)
