@@ -15,10 +15,9 @@ from transformers import (
 import sys
 sys.path.append('..')
 from gadgets.my_metrics import Accuracy, Scalar
-from .dist_utils import all_gather
 from .objectives import compute_irtr_recall
 from .clip_model import build_model
-from .objective_irtr import val_irtr, itm_eval
+from .objective_irtr import val_irtr, recall_eval
 
 def softmax(logits, t=0.01):
     return nn.functional.softmax(logits / t)
@@ -31,6 +30,13 @@ def init_weights(module):
     elif isinstance(module, (nn.LayerNorm)):
         module.bias.data.zero_()
         module.weight.data.fill_(1.0)
+
+def cosine_lr_schedule(optimizer, epoch, max_epoch, init_lr, min_lr):
+    """Decay the learning rate"""
+    lr = (init_lr - min_lr) * 0.5 * (1. + math.cos(math.pi * epoch / max_epoch)) + min_lr
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
 
 def get_text_backbone(config, backbone_config_path=None, pretrained=True):
     # 加载模型配置文件
@@ -263,7 +269,7 @@ def epoch_wrapup(pl_module, phase):
         else:
             data_loader = pl_module.trainer.datamodule.test_dataloader()
         score_val_i2t, score_val_t2i = val_irtr(pl_module, data_loader)
-        val_result = itm_eval(score_val_i2t, score_val_t2i, data_loader.dataset.index_mapper)
+        val_result = recall_eval(score_val_i2t, score_val_t2i, data_loader.dataset.index_mapper)
         print(f'global_step: {pl_module.global_step}')
         print(val_result)
         for item in ['txt_r1', 'txt_r5', 'txt_r10', 'txt_r_mean', 'img_r1', 'img_r5', 'img_r10', 'img_r_mean', 'r_mean']:
