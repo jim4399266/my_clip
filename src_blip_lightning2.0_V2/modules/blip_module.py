@@ -84,9 +84,7 @@ class BLIPModule(pl.LightningModule):
 
 
     def forward(self, batch, phase):
-        objective_irtr.train_irtr(self, batch, phase)
-
-        return irtr_loss
+        return objective_irtr.train_irtr(self, batch, phase)
 
     def on_train_epoch_start(self) -> None:
         config = self.hparams.config

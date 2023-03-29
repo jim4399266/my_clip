@@ -13,8 +13,6 @@ from pathlib import Path
 from modules.blip_module import BLIPModule
 from datamodules import build_datamodule
 
-# 哈哈，测试版本回滚
-
 os.environ["NCCL_DEBUG"] = "INFO"
 torch.set_float32_matmul_precision('high')
 
