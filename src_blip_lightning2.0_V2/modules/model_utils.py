@@ -3,7 +3,7 @@
 '''
 import torch
 import torch.nn as nn
-import random
+import math
 import os
 from transformers.optimization import AdamW
 from transformers import AutoTokenizer, AutoModel, AutoConfig
