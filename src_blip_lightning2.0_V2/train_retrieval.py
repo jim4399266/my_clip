@@ -25,15 +25,13 @@ def main(args, config):
             config['per_gpu_batchsize'] * max(1, config['num_device']) * config['num_nodes']
     ), 1)
 
-    dm = build_datamodule(config)
-    model = BLIPModule(config)
 
     log_dir = config['log_dir']
     if config['pretrained'] == "":
-        task = config['task_name'].keys()
+        task = '-'.join((list(config['task_name'].keys())))
         log_name = f'{task}_bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_from_{config["vit_name"]}_{config["image_size"]}_{config["tokenizer_name"]}'
     else:
-        task = config['task_name'].keys()
+        task = '-'.join((list(config['task_name'].keys())))
         log_name = f'{task}_bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_is{config["image_size"]}_from_{config["pretrained"].split("/")[-1].split(".")[0]}'
     output_dir = config['output_dir']
     if output_dir != None or "" or '':
@@ -63,6 +61,10 @@ def main(args, config):
     # earlystop_callback = pl.callbacks.EarlyStopping(monitor='val/total_loss', mode='min', check_on_train_epoch_end=False)
     # callbacks = [checkpoint_callback, lr_callback, earlystop_callback]
     callbacks = [modelsummary_callback, checkpoint_callback, lr_callback]
+
+    dm = build_datamodule(config)
+    model = BLIPModule(config)
+
 
     trainer = pl.Trainer(
         # resume_from_checkpoint=config['load_path'],
@@ -112,5 +114,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
     if args.debug:
+        config['devices'] = 1
         config['fast_dev_run'] = 2
     main(args, config)
