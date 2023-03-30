@@ -19,7 +19,6 @@ torch.set_float32_matmul_precision('high')
 def main(args, config):
     # 如果不用GPU，则num_gpus=0，防止下面除0，num_gpus置为1
     config['num_device'] = config['devices'] if isinstance(config['devices'], int) else len(config['devices'])
-    auto_select_gpus = True if (config['num_device'] > 1 and isinstance(config['devices'], int)) else False
     config['dist'] = True if config['num_device'] > 1 else False
     strategy = 'ddp' if config['num_device'] > 1 else None
     grad_steps = max(config['batch_size'] // (
@@ -30,17 +29,16 @@ def main(args, config):
     model = BLIPModule(config)
 
     log_dir = config['log_dir']
+    if config['pretrained'] == "":
+        task = config['task_name'].keys()
+        log_name = f'{task}_bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_from_{config["vit_name"]}_{config["image_size"]}_{config["tokenizer_name"]}'
+    else:
+        task = config['task_name'].keys()
+        log_name = f'{task}_bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_is{config["image_size"]}_from_{config["pretrained"].split("/")[-1].split(".")[0]}'
     output_dir = config['output_dir']
-
     if output_dir != None or "" or '':
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    if config['pretrained'] == "":
-        log_name = f'bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_is{config["image_size"]}_from_{config["vit_name"]}_{config["image_size"]}_{config["tokenizer_name"]}'
-        saved_dir = Path(output_dir) / f'bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_from_{config["vit_name"]}_{config["image_size"]}_{config["tokenizer_name"]}'
-    else:
-        log_name = f'bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_is{config["image_size"]}_from_{config["pretrained"].split("/")[-1].split(".")[0]}'
-        saved_dir = Path(output_dir) / f'bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_is{config["image_size"]}_from_{config["pretrained"].split("/")[-1].split(".")[0]}'
+    saved_dir = Path(output_dir) / log_name
 
     logger = pl.loggers.TensorBoardLogger(
         save_dir=log_dir,

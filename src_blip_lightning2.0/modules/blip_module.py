@@ -268,7 +268,7 @@ class BLIPModule(pl.LightningModule):
         pass
         # model_utils.set_tasks(self)
         # # 如果只有检索任务，则跳过
-        # if len(self.current_tasks) == 1 and self.hparams.config['loss_name'].get('irtr', 0) > 0:
+        # if len(self.current_tasks) == 1 and self.hparams.config['task_name'].get('irtr', 0) > 0:
         #     return None
         # output = self(batch, phase='val')
         # return output
@@ -283,7 +283,7 @@ class BLIPModule(pl.LightningModule):
         pass
         # model_utils.set_tasks(self)
         # # 如果只有检索任务，则跳过
-        # if len(self.current_tasks) == 1 and self.hparams.config['loss_name'].get('irtr', 0) > 0:
+        # if len(self.current_tasks) == 1 and self.hparams.config['task_name'].get('irtr', 0) > 0:
         #     return None
         # output = self(batch, phase='test')
         # return output

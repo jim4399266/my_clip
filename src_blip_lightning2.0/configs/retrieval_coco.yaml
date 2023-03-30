@@ -11,7 +11,7 @@ train_dataset_len: -1
 val_dataset_len: -1
 test_dataset_len: -1
 shuffle: True # 训练集是否打乱
-loss_name: {'irtr': 1}
+task_name: {'irtr': 1}
 get_recall_metric: True
 top_k: 64
 queue_size: 57600
