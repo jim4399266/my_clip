@@ -4,7 +4,7 @@
 datasets: ['coco']
 data_root: "/home/tzj/datas/mscoco/coco2014_karpathy_prepared"
 output_dir: "../outputs"
-log_dir: "../logs"
+log_dir: "../logs_blip"
 # set pretrained as a file path or an url
 #pretrained: ''
 #pretrained: '/home/tzj/pretrained_models/blip/model_base_retrieval_coco.pth'
