@@ -19,7 +19,6 @@ torch.set_float32_matmul_precision('high')
 def main(args, config):
     # 如果不用GPU，则num_gpus=0，防止下面除0，num_gpus置为1
     config['num_device'] = config['devices'] if isinstance(config['devices'], int) else len(config['devices'])
-    auto_select_gpus = True if (config['num_device'] > 1 and isinstance(config['devices'], int)) else False
     config['dist'] = True if config['num_device'] > 1 else False
     strategy = 'ddp' if config['num_device'] > 1 else None
     grad_steps = max(config['batch_size'] // (
@@ -115,4 +114,6 @@ if __name__ == '__main__':
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
     if args.debug:
         config['fast_dev_run'] = 2
+        # 测试merge
+        print('this is branch dev')
     main(args, config)

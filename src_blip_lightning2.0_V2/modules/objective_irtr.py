@@ -7,6 +7,170 @@ from tqdm import tqdm
 import numpy as np
 from collections import defaultdict
 import torch.distributed as dist
+from .dist_utils import all_gather_with_grad, concat_all_gather
+
+def train_irtr(pl_module, batch, phase):
+    with torch.no_grad():
+        pl_module.temp.clamp_(0.001, 0.5)
+    image = batch['image']
+    caption = batch['text']
+    alpha = pl_module.hparams.config['cur_alpha']
+    idx = batch['image_index']
+
+    image_embeds = pl_module.visual_encoder(image)
+    image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
+    image_feat = F.normalize(pl_module.vision_proj(image_embeds[:, 0, :]), dim=-1)
+
+    text = pl_module.tokenizer(caption, padding='max_length', truncation=True, max_length=35,
+                          return_tensors="pt").to(image.device)
+
+    text_output = pl_module.text_encoder(text.input_ids, attention_mask=text.attention_mask,
+                                    return_dict=True, mode='text')
+    text_feat = F.normalize(pl_module.text_proj(text_output.last_hidden_state[:, 0, :]), dim=-1)
+
+    ###============== Image-text Contrastive Learning ===================###
+    idx = idx.view(-1, 1)
+    idx_all = torch.cat([idx.t(), pl_module.idx_queue.clone().detach()], dim=1)
+    pos_idx = torch.eq(idx, idx_all).float()
+    sim_targets = pos_idx / pos_idx.sum(1, keepdim=True)
+
+    # get momentum features
+    with torch.no_grad():
+        pl_module._momentum_update()
+        image_embeds_m = pl_module.visual_encoder_m(image)
+        image_feat_m = F.normalize(pl_module.vision_proj_m(image_embeds_m[:, 0, :]), dim=-1)
+        image_feat_m_all = torch.cat([image_feat_m.t(), pl_module.image_queue.clone().detach()], dim=1)
+
+        text_output_m = pl_module.text_encoder_m(text.input_ids, attention_mask=text.attention_mask,
+                                            return_dict=True, mode='text')
+        text_feat_m = F.normalize(pl_module.text_proj_m(text_output_m.last_hidden_state[:, 0, :]), dim=-1)
+        text_feat_m_all = torch.cat([text_feat_m.t(), pl_module.text_queue.clone().detach()], dim=1)
+
+        sim_i2t_m = image_feat_m @ text_feat_m_all / pl_module.temp
+        sim_t2i_m = text_feat_m @ image_feat_m_all / pl_module.temp
+
+        sim_i2t_targets = alpha * F.softmax(sim_i2t_m, dim=1) + (1 - alpha) * sim_targets
+        sim_t2i_targets = alpha * F.softmax(sim_t2i_m, dim=1) + (1 - alpha) * sim_targets
+
+    sim_i2t = image_feat @ text_feat_m_all / pl_module.temp
+    sim_t2i = text_feat @ image_feat_m_all / pl_module.temp
+
+    loss_i2t = -torch.sum(F.log_softmax(sim_i2t, dim=1) * sim_i2t_targets, dim=1).mean()
+    loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1) * sim_t2i_targets, dim=1).mean()
+
+    loss_itc = (loss_i2t + loss_t2i) / 2
+
+    idxs = concat_all_gather(idx, world_size=pl_module.trainer.world_size)
+    pl_module._dequeue_and_enqueue(image_feat_m, text_feat_m, idxs)
+
+    ###============== Image-text Matching ===================###
+    encoder_input_ids = text.input_ids.clone()
+    encoder_input_ids[:, 0] = pl_module.tokenizer.enc_token_id
+
+    # forward the positve image-text pair         # 正相关的图文对进行融合，得到output_pos，是正相关图文对融合后的向量
+    bs = image.size(0)
+    output_pos = pl_module.text_encoder(encoder_input_ids,
+                                   attention_mask=text.attention_mask,
+                                   encoder_hidden_states=image_embeds,
+                                   encoder_attention_mask=image_atts,
+                                   return_dict=True,
+                                   )
+
+    if pl_module.negative_all_rank:  # 如果是分布式，从所有卡中抽取负样本
+        # compute sample similarity
+        with torch.no_grad():
+            mask = torch.eq(idx, idxs.t())
+
+            image_feat_world = concat_all_gather(image_feat, pl_module.trainer.world_size)
+            text_feat_world = concat_all_gather(text_feat, pl_module.trainer.world_size)
+
+            sim_i2t = image_feat @ text_feat_world.t() / pl_module.temp
+            sim_t2i = text_feat @ image_feat_world.t() / pl_module.temp
+
+            weights_i2t = F.softmax(sim_i2t, dim=1)
+            weights_i2t.masked_fill_(mask, 0)
+
+            weights_t2i = F.softmax(sim_t2i, dim=1)
+            weights_t2i.masked_fill_(mask, 0)
+
+        image_embeds_world = all_gather_with_grad(image_embeds, pl_module.trainer.world_size)
+
+        # select a negative image (from all ranks) for each text
+        image_embeds_neg = []
+        for b in range(bs):
+            neg_idx = torch.multinomial(weights_t2i[b], 1).item()
+            image_embeds_neg.append(image_embeds_world[neg_idx])
+        image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+
+        # select a negative text (from all ranks) for each image
+        input_ids_world = concat_all_gather(encoder_input_ids, pl_module.trainer.world_size)
+        att_mask_world = concat_all_gather(text.attention_mask, pl_module.trainer.world_size)
+
+        text_ids_neg = []
+        text_atts_neg = []
+        for b in range(bs):
+            neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+            text_ids_neg.append(input_ids_world[neg_idx])
+            text_atts_neg.append(att_mask_world[neg_idx])
+
+    else:  # 仅从当前卡上的批次中抽取负样本
+        with torch.no_grad():
+            mask = torch.eq(idx, idx.t())
+
+            sim_i2t = image_feat @ text_feat.t() / pl_module.temp
+            sim_t2i = text_feat @ image_feat.t() / pl_module.temp
+
+            weights_i2t = F.softmax(sim_i2t, dim=1)
+            weights_i2t.masked_fill_(mask, 0)
+
+            weights_t2i = F.softmax(sim_t2i, dim=1)
+            weights_t2i.masked_fill_(mask, 0)
+
+            # select a negative image (from same rank) for each text
+        image_embeds_neg = []
+        for b in range(bs):
+            neg_idx = torch.multinomial(weights_t2i[b], 1).item()
+            image_embeds_neg.append(image_embeds[neg_idx])
+        image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+
+        # select a negative text (from same rank) for each image
+        text_ids_neg = []
+        text_atts_neg = []
+        for b in range(bs):
+            neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+            text_ids_neg.append(encoder_input_ids[neg_idx])
+            text_atts_neg.append(text.attention_mask[neg_idx])
+
+    text_ids_neg = torch.stack(text_ids_neg, dim=0)
+    text_atts_neg = torch.stack(text_atts_neg, dim=0)
+    # 这里实现文本和图片的负样本配对，image_embeds_neg是image_embeds_neg对应的负样本，text_ids_neg是image_embeds对应的负样本
+    text_ids_all = torch.cat([encoder_input_ids, text_ids_neg], dim=0)
+    text_atts_all = torch.cat([text.attention_mask, text_atts_neg], dim=0)
+
+    image_embeds_all = torch.cat([image_embeds_neg, image_embeds], dim=0)
+    image_atts_all = torch.cat([image_atts, image_atts], dim=0)
+    # output_neg是正样本与难负样本融合后的向量
+    output_neg = pl_module.text_encoder(text_ids_all,
+                                   attention_mask=text_atts_all,
+                                   encoder_hidden_states=image_embeds_all,
+                                   encoder_attention_mask=image_atts_all,
+                                   return_dict=True,
+                                   )
+    # 计算正样本与正相关、负相关样本融合后的相似度
+    vl_embeddings = torch.cat([output_pos.last_hidden_state[:, 0, :], output_neg.last_hidden_state[:, 0, :]], dim=0)
+    vl_output = pl_module.itm_head(vl_embeddings)
+
+    itm_labels = torch.cat([torch.ones(bs, dtype=torch.long), torch.zeros(2 * bs, dtype=torch.long)],
+                           dim=0).to(image.device)
+    loss_itm = F.cross_entropy(vl_output, itm_labels)
+
+    irtr_loss = loss_itm + loss_itc
+    irtr_loss_ = getattr(pl_module, f"{phase}_irtr_loss")(irtr_loss)
+    pl_module.log(f"irtr/{phase}/itc_loss", loss_itc)
+    pl_module.log(f"irtr/{phase}/itm_loss", loss_itm)
+    pl_module.log(f"irtr/{phase}/irtr_loss", irtr_loss)
+    return irtr_loss
+
 
 @torch.no_grad()
 def val_irtr(pl_module, data_loader):
@@ -109,7 +273,7 @@ def val_irtr(pl_module, data_loader):
 
 
 @torch.no_grad()
-def itm_eval(scores_i2t, scores_t2i, index_mapper):
+def recall_eval(scores_i2t, scores_t2i, index_mapper):
     img2txt, txt2img = {}, {}
     for k, v in index_mapper.items():
         # t_idx = k         i_idx = v[0]

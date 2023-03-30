@@ -2,10 +2,10 @@
 <project version="4">
   <component name="PublishConfigData" autoUpload="Always" serverName="cad04_tzj@10.112.17.225:17877 pt2" remoteFilesAllowedToDisappearOnAutoupload="false" autoUploadExternalChanges="true" showNewOnSourceInSync="false">
     <serverData>
-      <paths name="cad04_tzj@10.112.17.225:17877 blip">
+      <paths name="cad04_tzj@10.112.17.225:17877">
         <serverdata>
           <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/home/tzj/codes/my_clip" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
@@ -23,35 +23,35 @@
           </mappings>
         </serverdata>
       </paths>
-      <paths name="isi@127.0.0.1:10024 retr_copy">
+      <paths name="isi@49.232.216.2:8000">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
-      <paths name="tzj@10.112.179.49:17877">
+      <paths name="tzj@10.112.67.227:17877 meter">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
-      <paths name="tzj@10.112.179.49:17877 bert_joint">
+      <paths name="tzj@10.112.67.227:17877 password">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
-      <paths name="tzj@10.112.179.49:17877 jigsaw">
+      <paths name="tzj@10.112.67.227:17877 pt1.11">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
-      <paths name="tzj@10.112.179.49:17877 password">
+      <paths name="tzj@192.168.1.21:13579 my_clip">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />

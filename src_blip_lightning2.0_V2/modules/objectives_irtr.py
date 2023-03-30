@@ -11,10 +11,8 @@ import glob
 import json
 from tqdm import tqdm
 import functools
-
 from torch.utils.data.distributed import DistributedSampler
 
-from .dist_utils import all_gather
 # 将缓存的张量转为Dataset
 
 def irtr_encoder(pl_module, dataloader):

@@ -5,19 +5,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
-import os
-import glob
-import json
-from tqdm import tqdm
-import functools
-
-from torch.utils.data.distributed import DistributedSampler
-
-from .dist_utils import all_gather
 from .objectives_irtr import compute_irtr_recall_
-
-
 
 def compute_irtr(pl_module, encoder_ret, phase):
     # batch 内的对比学习，对应的图文为正样本，其余为负样本

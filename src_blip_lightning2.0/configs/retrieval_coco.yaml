@@ -1,13 +1,9 @@
 # 常规设置
-#image_root: '/home/tzj/datas/mscoco/coco2014_karpathy'
-#ann_root: '/home/tzj/datas/mscoco/coco2014_karpathy/annotation'
 datasets: ['coco']
 data_root: "/home/tzj/datas/mscoco/coco2014_karpathy_prepared"
 output_dir: "../outputs"
 log_dir: "../logs_blip"
 # set pretrained as a file path or an url
-#pretrained: ''
-#pretrained: '/home/tzj/pretrained_models/blip/model_base_retrieval_coco.pth'
 pretrained: '/home/tzj/pretrained_models/blip/model_base.pth'
 
 seed: 42
@@ -25,7 +21,6 @@ negative_all_rank: True
 
 # ----------------------  Lightning Trainer Setting  ------------------------------
 #load_path: ""  # 模型权重地址
-# load_path = "/home/tzj/pretrained_models/meter_clip16_224_roberta_pretrain.ckpt"  # 模型权重地址
 num_sanity_val_steps: 0 # 在开始前取 n 个val batches
 fast_dev_run: False # 快速检验，取 n 个train, val, test batches
 val_check_interval: 1.0 # 验证间隔（浮点数为每X个epoch验证一次，整数为每X个step验证一次）
@@ -41,13 +36,12 @@ max_grad_norm: 1.
 apex: False
 amp_level: 'O1'
 
-
 # ----------------------  Image Setting  ----------------------
 vit_name: 'ViT-B-32'
+vit: 'base'
 #vit: '/home/tzj/pretrained_models/ViT/ViT-B-32.pt'  # vit模型权重
 #vit_name: 'ViT-B-16'
 #vit: '/home/tzj/pretrained_models/ViT/ViT-B-16.pt'  # vit模型权重
-vit: 'base'
 image_size: 224 # 调整后的图片像素
 patch_size: 32 # 送入vit的图片块的像素
 train_transform_keys: ["clip"] # 预处理图片的模型（将图片处理为image_size * image_size）
@@ -78,10 +72,8 @@ mlm_prob: 0.15 # mlm遮罩比例
 
 # ----------------------  Optimizer Setting  ----------------------
 optim_type: 'adamw'
-#learning_rate: 2e-5
 init_lr: 1e-5
 learning_rate: 1e-5
-#end_lr: 0
 min_lr: 0
 eps: 1e-8
 betas: (0.9, 0.98)
@@ -93,38 +85,3 @@ warmup_steps: -1
 
 lr_mult_head: 5 # multiply lr for downstream heads
 lr_mult_cross_modal: 5  # multiply lr for the cross-modal module
-
-
-
-
-
-# size of vit model; base or large
-
-#vit: 'base'
-#batch_size_train: 32
-#batch_size_test: 64
-#vit_grad_ckpt: True
-#vit_ckpt_layer: 4
-#init_lr: 1e-5
-#
-## vit: 'large'
-## batch_size_train: 16
-## batch_size_test: 32
-## vit_grad_ckpt: True
-## vit_ckpt_layer: 12
-## init_lr: 5e-6
-#
-##image_size: 288
-#image_size: 224
-##image_size: 384
-#queue_size: 57600
-
-#k_test: 64
-##k_test: 256
-
-#
-## optimizer
-#weight_decay: 0.05
-#min_lr: 0
-#max_epoch: 6
-

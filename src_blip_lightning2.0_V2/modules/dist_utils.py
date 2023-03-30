@@ -140,60 +140,60 @@ def _pad_to_largest_tensor(tensor, group):
         tensor = torch.cat((tensor, padding), dim=0)
     return size_list, tensor
 
-@torch.no_grad()
-def concat_all_gather(tensor, world_size=1):
-    """
-    Performs all_gather operation on the provided tensors.
-    *** Warning ***: torch.distributed.all_gather has no gradient.
-    """
-    if world_size > 1:
-        tensors_gather = [torch.ones_like(tensor)
-            for _ in range(torch.distributed.get_world_size())]
-        torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+# @torch.no_grad()
+# def concat_all_gather(tensor, world_size=1):
+#     """
+#     Performs all_gather operation on the provided tensors.
+#     *** Warning ***: torch.distributed.all_gather has no gradient.
+#     """
+#     if world_size > 1:
+#         tensors_gather = [torch.ones_like(tensor)
+#             for _ in range(torch.distributed.get_world_size())]
+#         torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+#
+#         output = torch.cat(tensors_gather, dim=0)
+#         return output
+#     else:
+#         return tensor
 
-        output = torch.cat(tensors_gather, dim=0)
-        return output
-    else:
-        return tensor
 
-
-def all_gather(data, group=None):
-    """
-    Run all_gather on arbitrary picklable data (not necessarily tensors).
-
-    Args:
-        data: any picklable object
-        group: a torch process group. By default, will use a group which
-            contains all ranks on gloo backend.
-
-    Returns:
-        list[data]: list of data gathered from each rank
-    """
-    if get_world_size() == 1:
-        return [data]
-    if group is None:
-        group = _get_global_gloo_group()
-    if dist.get_world_size(group) == 1:
-        return [data]
-
-    tensor = _serialize_to_tensor(data, group)
-
-    size_list, tensor = _pad_to_largest_tensor(tensor, group)
-    max_size = max(size_list)
-
-    # receiving Tensor from all ranks
-    tensor_list = [
-        torch.empty((max_size,), dtype=torch.uint8, device=tensor.device)
-        for _ in size_list
-    ]
-    dist.all_gather(tensor_list, tensor, group=group)
-
-    data_list = []
-    for size, tensor in zip(size_list, tensor_list):
-        buffer = tensor.cpu().numpy().tobytes()[:size]
-        data_list.append(pickle.loads(buffer))
-
-    return data_list
+# def all_gather(data, group=None):
+#     """
+#     Run all_gather on arbitrary picklable data (not necessarily tensors).
+#
+#     Args:
+#         data: any picklable object
+#         group: a torch process group. By default, will use a group which
+#             contains all ranks on gloo backend.
+#
+#     Returns:
+#         list[data]: list of data gathered from each rank
+#     """
+#     if get_world_size() == 1:
+#         return [data]
+#     if group is None:
+#         group = _get_global_gloo_group()
+#     if dist.get_world_size(group) == 1:
+#         return [data]
+#
+#     tensor = _serialize_to_tensor(data, group)
+#
+#     size_list, tensor = _pad_to_largest_tensor(tensor, group)
+#     max_size = max(size_list)
+#
+#     # receiving Tensor from all ranks
+#     tensor_list = [
+#         torch.empty((max_size,), dtype=torch.uint8, device=tensor.device)
+#         for _ in size_list
+#     ]
+#     dist.all_gather(tensor_list, tensor, group=group)
+#
+#     data_list = []
+#     for size, tensor in zip(size_list, tensor_list):
+#         buffer = tensor.cpu().numpy().tobytes()[:size]
+#         data_list.append(pickle.loads(buffer))
+#
+#     return data_list
 
 
 def gather(data, dst=0, group=None):
@@ -240,18 +240,18 @@ def gather(data, dst=0, group=None):
         return []
 
 
-def shared_random_seed():
-    """
-    Returns:
-        int: a random number that is the same across all workers.
-            If workers need a shared RNG, they can use this shared seed to
-            create one.
-
-    All workers must call this function, otherwise it will deadlock.
-    """
-    ints = np.random.randint(2 ** 31)
-    all_ints = all_gather(ints)
-    return all_ints[0]
+# def shared_random_seed():
+#     """
+#     Returns:
+#         int: a random number that is the same across all workers.
+#             If workers need a shared RNG, they can use this shared seed to
+#             create one.
+#
+#     All workers must call this function, otherwise it will deadlock.
+#     """
+#     ints = np.random.randint(2 ** 31)
+#     all_ints = all_gather(ints)
+#     return all_ints[0]
 
 
 def reduce_dict(input_dict, average=True):
@@ -284,3 +284,55 @@ def reduce_dict(input_dict, average=True):
             values /= world_size
         reduced_dict = {k: v for k, v in zip(names, values)}
     return reduced_dict
+
+@torch.no_grad()
+def concat_all_gather(tensor, world_size):
+    """
+    Performs all_gather operation on the provided tensors.
+    *** Warning ***: torch.distributed.all_gather has no gradient.
+    """
+    if world_size > 1:
+        tensors_gather = [torch.ones_like(tensor)
+            for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+
+        output = torch.cat(tensors_gather, dim=0)
+        return output
+    else:
+        return tensor
+
+
+class GatherLayer(torch.autograd.Function):
+    """
+    Gather tensors from all workers with support for backward propagation:
+    This implementation does not cut the gradients as torch.distributed.all_gather does.
+    """
+
+    @staticmethod
+    def forward(ctx, x):
+        output = [torch.zeros_like(x) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(output, x)
+        return tuple(output)
+
+    @staticmethod
+    def backward(ctx, *grads):
+        all_gradients = torch.stack(grads)
+        torch.distributed.all_reduce(all_gradients)
+        return all_gradients[torch.distributed.get_rank()]
+
+
+def all_gather_with_grad(tensors, world_size):
+    """
+    Performs all_gather operation on the provided tensors.
+    Graph remains connected for backward grad computation.
+    """
+    # Queue the gathered tensors
+    # world_size = torch.distributed.get_world_size()
+    # There is no need for reduction in the single-proc case
+    if world_size == 1:
+        return tensors
+
+    tensor_all = GatherLayer.apply(tensors)
+
+    return torch.cat(tensor_all, dim=0)
+
