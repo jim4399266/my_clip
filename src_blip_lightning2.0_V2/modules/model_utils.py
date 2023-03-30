@@ -70,7 +70,7 @@ def freeze_module(module):
 def set_metrics(pl_module):
     # 区分训练集和验证集的指标
     for split in ['train', 'val', 'test']:
-        for k, v in pl_module.hparams.config['loss_name'].items():
+        for k, v in pl_module.hparams.config['task_name'].items():
             if v < 1:
                 continue
             if k == 'irtr':
@@ -80,7 +80,7 @@ def set_metrics(pl_module):
                 setattr(pl_module, f"{split}_{k}_loss", Scalar())
 
 def set_tasks(pl_module):
-    pl_module.current_tasks = [k for k, v in pl_module.hparams.config['loss_name'].items() if v >=1]
+    pl_module.current_tasks = [k for k, v in pl_module.hparams.config['task_name'].items() if v >=1]
 
 def set_schedule(pl_module):
     config = pl_module.hparams.config
@@ -263,7 +263,7 @@ def set_schedule(pl_module):
 def epoch_wrapup(pl_module, phase):
     the_metric = 0
     total_loss = 0
-    if 'irtr' in pl_module.hparams.config['loss_name'] and not pl_module.training:
+    if 'irtr' in pl_module.hparams.config['task_name'] and not pl_module.training:
         if phase == 'val':
             data_loader = pl_module.trainer.datamodule.val_dataloader()
         else:
@@ -285,14 +285,14 @@ def epoch_wrapup(pl_module, phase):
 
     # if pl_module.trainer.
 
-    # for loss_name, v in pl_module.hparams.config['loss_name'].items():
+    # for task_name, v in pl_module.hparams.config['task_name'].items():
     #     if v < 1:
     #         continue
     #     value = 0
-    #     if loss_name == 'irtr':
-    #         loss = getattr(pl_module, f'{phase}_{loss_name}_loss').compute()
-    #         pl_module.log(f'{loss_name}/{phase}/loss_epoch', loss)
-    #         getattr(pl_module, f'{phase}_{loss_name}_loss').reset()
+    #     if task_name == 'irtr':
+    #         loss = getattr(pl_module, f'{phase}_{task_name}_loss').compute()
+    #         pl_module.log(f'{task_name}/{phase}/loss_epoch', loss)
+    #         getattr(pl_module, f'{phase}_{task_name}_loss').reset()
     #
     #         the_metric += value
     #         total_loss += loss
@@ -318,21 +318,21 @@ def epoch_wrapup_o(pl_module, phase):
                       + (ir_r5.item() + tr_r5.item()) * 5 \
                       + ir_r10.item() + tr_r10.item()
 
-    for loss_name, v in pl_module.hparams.config['loss_name'].items():
+    for task_name, v in pl_module.hparams.config['task_name'].items():
         if v < 1:
             continue
         value = 0
-        if loss_name == 'irtr':
-            loss = getattr(pl_module, f'{phase}_{loss_name}_loss').compute()
-            pl_module.log(f'{loss_name}/{phase}/loss_epoch', loss)
-            getattr(pl_module, f'{phase}_{loss_name}_loss').reset()
-        elif loss_name == 'itm':
-            value = getattr(pl_module, f'{phase}_{loss_name}_accuracy', 0).compute()
-            pl_module.log(f'{loss_name}/{phase}/accuracy_epoch', value)
-            getattr(pl_module, f'{phase}_{loss_name}_accuracy').reset()
-            loss = getattr(pl_module, f'{phase}_{loss_name}_loss').compute()
-            pl_module.log(f'{loss_name}/{phase}/loss_epoch', loss)
-            getattr(pl_module, f'{phase}_{loss_name}_loss').reset()
+        if task_name == 'irtr':
+            loss = getattr(pl_module, f'{phase}_{task_name}_loss').compute()
+            pl_module.log(f'{task_name}/{phase}/loss_epoch', loss)
+            getattr(pl_module, f'{phase}_{task_name}_loss').reset()
+        elif task_name == 'itm':
+            value = getattr(pl_module, f'{phase}_{task_name}_accuracy', 0).compute()
+            pl_module.log(f'{task_name}/{phase}/accuracy_epoch', value)
+            getattr(pl_module, f'{phase}_{task_name}_accuracy').reset()
+            loss = getattr(pl_module, f'{phase}_{task_name}_loss').compute()
+            pl_module.log(f'{task_name}/{phase}/loss_epoch', loss)
+            getattr(pl_module, f'{phase}_{task_name}_loss').reset()
         the_metric += value
         # total_loss += loss
     pl_module.log(f'{phase}/the_metric', the_metric)

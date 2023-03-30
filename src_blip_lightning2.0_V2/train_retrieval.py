@@ -20,11 +20,10 @@ def main(args, config):
     # 如果不用GPU，则num_gpus=0，防止下面除0，num_gpus置为1
     config['num_device'] = config['devices'] if isinstance(config['devices'], int) else len(config['devices'])
     config['dist'] = True if config['num_device'] > 1 else False
-    strategy = 'ddp' if config['num_device'] > 1 else None
+    strategy = 'ddp' if config['num_device'] > 1 else 'auto'
     grad_steps = max(config['batch_size'] // (
             config['per_gpu_batchsize'] * max(1, config['num_device']) * config['num_nodes']
     ), 1)
-
 
     log_dir = config['log_dir']
     if config['pretrained'] == "":
@@ -101,7 +100,6 @@ def main(args, config):
     else:
         trainer.fit(model, datamodule=dm)
         weight_paths = list(Path(checkpoint_callback.dirpath).rglob('*.[pc][tk][hp]*'))
-        # weight_paths = list(Path('/home/tzj/codes/my_clip/outputs/bs4096_pbs128_epoch20_lr8e-05_from_ViT-B-32_224_roberta-base/version_0').rglob('*.[pc][tk][hp]*'))
         for ckpt in weight_paths:
             trainer.test(model, datamodule=dm, ckpt_path=str(ckpt))
 

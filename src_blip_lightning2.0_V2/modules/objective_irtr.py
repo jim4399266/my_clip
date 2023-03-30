@@ -9,7 +9,54 @@ from collections import defaultdict
 import torch.distributed as dist
 from .dist_utils import all_gather_with_grad, concat_all_gather
 
+
+def in_modality_g2l_loss(local_feature, global_feature, temp, attention_mask=None):
+    global_feature = global_feature.unsqueeze(1)
+    bs, local_len, dim = local_feature.size()
+    local_feature_n = local_feature.reshape(-1, dim)  # (bs * local_len) * dim
+    global_feature_n = global_feature.reshape(-1, dim)  # bs * dim
+
+    # Inner product for positive samples. Outer product for negative. We need to do it this way
+    # for the multiclass loss. For the outer product, we want a 'bs x bs x local_len x 1' tensor.
+    u_p = torch.matmul(local_feature, global_feature.permute(0, 2, 1)).unsqueeze(-1) / temp # bs x local_len x 1 x 1
+
+    # if 1 comes frm text, then attention_mask is not None
+    if attention_mask:
+        temp_mask = attention_mask.unsqueeze(-1).unsqueeze(-1)
+        u_p = (temp_mask * u_p) + (10000. * (1 - temp_mask))
+        u_p = u_p.masked_fill(temp_mask, 10000.)
+
+    u_n = torch.matmul(global_feature_n, local_feature_n.T) / temp  # bs x (bs * local_len)
+    u_n = u_n.reshape(bs, 1, bs, local_len).permute(0, 2, 3, 1)    # bs x bs x local_len x 1
+
+    # We need to mask the diagonal part of the negative tensor
+    mask = torch.eye(bs)[:, :, None, None].to(local_feature.device)  # bs x bs x 1 x 1
+    n_mask = 1 - mask
+
+    # Masking is done by shifting the diagonal before exp
+    u_n = (n_mask * u_n) - (10000. * (1 - n_mask))   # mask out "self" examples
+
+    # if 1 comes from text, we mask out the padding tokens
+    if attention_mask:
+        temp_mask = attention_mask.unsqueeze(0).unsqueeze(-1).expend(bs, -1, -1, -1)  # bs x bs x local_len x 1
+        u_n = (temp_mask * u_n) - (10000. * (1 - temp_mask))
+    u_n = u_n.reshape(bs, bs * local_len, 1).\
+        unsqueeze(1).expend(-1, local_len, -1, -1) # bs x local_len x (bs*local_len) x 1
+
+    # Since this is multiclass, we concat the positive along the class dimension before performing log softmax.
+    pred_lgt = torch.cat([u_p, u_n], dim=2)
+    pred_log = F.log_softmax(pred_lgt, dim=2)
+
+    # The positive score is the first element of the log softmax
+    if attention_mask:
+        loss = (torch.sum(-pred_log[:, :, 0].squeeze(), dim=1) / torch.sum(attention_mask, dim=1)).mean()
+    else:
+        loss = -pred_log[:, :, 0].mean()
+    return loss
+
+
 def train_irtr(pl_module, batch, phase):
+    # TCL方法，三重损失
     with torch.no_grad():
         pl_module.temp.clamp_(0.001, 0.5)
     image = batch['image']
@@ -37,27 +84,44 @@ def train_irtr(pl_module, batch, phase):
     # get momentum features
     with torch.no_grad():
         pl_module._momentum_update()
+        # -------  all image momentum features  -----------
         image_embeds_m = pl_module.visual_encoder_m(image)
         image_feat_m = F.normalize(pl_module.vision_proj_m(image_embeds_m[:, 0, :]), dim=-1)
         image_feat_m_all = torch.cat([image_feat_m.t(), pl_module.image_queue.clone().detach()], dim=1)
+        #  momentum image local features
+        image_feat_m_l = F.normalize(pl_module.vision_proj_m(image_embeds_m[:, 1:, :]), dim=-1)
+        image_feat_m_l = pl_module.patch_pooling(image_feat_m_l)  # pooling for image patches
 
+        # -------  all text momentum features  -----------
         text_output_m = pl_module.text_encoder_m(text.input_ids, attention_mask=text.attention_mask,
                                             return_dict=True, mode='text')
         text_feat_m = F.normalize(pl_module.text_proj_m(text_output_m.last_hidden_state[:, 0, :]), dim=-1)
         text_feat_m_all = torch.cat([text_feat_m.t(), pl_module.text_queue.clone().detach()], dim=1)
+        # momentum text local features
+        text_feat_m_l = F.normalize(pl_module.text_proj_m(text_output_m.last_hidden_state[:, 1:, :]), dim=-1)
 
-        sim_i2t_m = image_feat_m @ text_feat_m_all / pl_module.temp
-        sim_t2i_m = text_feat_m @ image_feat_m_all / pl_module.temp
+        if pl_module.distill:
+            sim_i2t_m = image_feat_m @ text_feat_m_all / pl_module.temp
+            sim_t2i_m = text_feat_m @ image_feat_m_all / pl_module.temp
 
-        sim_i2t_targets = alpha * F.softmax(sim_i2t_m, dim=1) + (1 - alpha) * sim_targets
-        sim_t2i_targets = alpha * F.softmax(sim_t2i_m, dim=1) + (1 - alpha) * sim_targets
+            sim_i2t_targets = alpha * F.softmax(sim_i2t_m, dim=1) + (1 - alpha) * sim_targets
+            sim_t2i_targets = alpha * F.softmax(sim_t2i_m, dim=1) + (1 - alpha) * sim_targets
 
     sim_i2t = image_feat @ text_feat_m_all / pl_module.temp
     sim_t2i = text_feat @ image_feat_m_all / pl_module.temp
 
-    loss_i2t = -torch.sum(F.log_softmax(sim_i2t, dim=1) * sim_i2t_targets, dim=1).mean()
-    loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1) * sim_t2i_targets, dim=1).mean()
+    if pl_module.distill:
+        loss_i2t = -torch.sum(F.log_softmax(sim_i2t, dim=1) * sim_i2t_targets, dim=1).mean()
+        loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1) * sim_t2i_targets, dim=1).mean()
+    else:
+        loss_i2t = -torch.sum(F.log_softmax(sim_i2t, dim=1) * sim_targets, dim=1).mean()
+        loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1) * sim_targets, dim=1).mean()
 
+    # add in-modality g2l loss (in-modality global to local)
+    loss_t2t_IM_g2l = in_modality_g2l_loss(text_feat_m_l, text_feat, pl_module.temp, text.attention_mask[:, 1:, :])
+    loss_i2i_IM_g2l = in_modality_g2l_loss(image_feat_m_l, image_feat, pl_module.temp)
+
+    # add in-modality g2g loss (in-modality local to local)
     loss_itc = (loss_i2t + loss_t2i) / 2
 
     idxs = concat_all_gather(idx, world_size=pl_module.trainer.world_size)

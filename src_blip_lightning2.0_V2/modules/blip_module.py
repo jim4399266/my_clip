@@ -1,4 +1,4 @@
-import copy
+import numpy as np
 import torch
 import math
 from torch import nn
@@ -32,6 +32,7 @@ class BLIPModule(pl.LightningModule):
 
         self.queue_size = config['queue_size']
         self.momentum = config['momentum']
+        self.distill = True
 
         self.visual_encoder, vision_width = create_vit(vit, image_size, vit_grad_ckpt, vit_ckpt_layer)
         self.tokenizer = init_tokenizer()
@@ -114,7 +115,7 @@ class BLIPModule(pl.LightningModule):
         pass
         # model_utils.set_tasks(self)
         # # 如果只有检索任务，则跳过
-        # if len(self.current_tasks) == 1 and self.hparams.config['loss_name'].get('irtr', 0) > 0:
+        # if len(self.current_tasks) == 1 and self.hparams.config['task_name'].get('irtr', 0) > 0:
         #     return None
         # output = self(batch, phase='val')
         # return output
@@ -131,7 +132,7 @@ class BLIPModule(pl.LightningModule):
         pass
         # model_utils.set_tasks(self)
         # # 如果只有检索任务，则跳过
-        # if len(self.current_tasks) == 1 and self.hparams.config['loss_name'].get('irtr', 0) > 0:
+        # if len(self.current_tasks) == 1 and self.hparams.config['task_name'].get('irtr', 0) > 0:
         #     return None
         # output = self(batch, phase='test')
         # return output
@@ -191,6 +192,25 @@ class BLIPModule(pl.LightningModule):
         ptr = (ptr + batch_size) % self.queue_size  # move pointer
 
         self.ptr_queue[0] = ptr
+
+    # patch pooling of image patches to reduce computation and enlarge receptive field
+    def patch_pooling(self, x, pooled_patch_length=16):
+        batch_size, seq_length, dim = x.size()
+        b1 = int(np.sqrt(seq_length))
+        x = x.reshape(batch_size, b1, b1, dim)
+        x = x.permute(0,3,1,2)
+        c1 = b1 // int(np.sqrt(pooled_patch_length))
+        x = F.avg_pool2d(x, c1, stride=c1)
+        x = x.permute(0,2,3,1).reshape(batch_size, pooled_patch_length, dim)
+        return x
+
+
+
+def cosine_lr_schedule(optimizer, epoch, max_epoch, init_lr, min_lr):
+    """Decay the learning rate"""
+    lr = (init_lr - min_lr) * 0.5 * (1. + math.cos(math.pi * epoch / max_epoch)) + min_lr
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
 
 
