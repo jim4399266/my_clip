@@ -1,4 +1,4 @@
-import copy
+import numpy as np
 import torch
 import math
 from torch import nn
@@ -343,6 +343,18 @@ class BLIPModule(pl.LightningModule):
         ptr = (ptr + batch_size) % self.queue_size  # move pointer
 
         self.ptr_queue[0] = ptr
+
+    # patch pooling of image patches to reduce computation and enlarge receptive field
+    def patch_pooling(self, x, pooled_patch_length=16):
+        batch_size, seq_length, dim = x.size()
+        b1 = int(np.sqrt(seq_length))
+        x = x.reshape(batch_size, b1, b1, dim)
+        x = x.permute(0,3,1,2)
+        c1 = b1 // int(np.sqrt(pooled_patch_length))
+        x = F.avg_pool2d(x, c1, stride=c1)
+        x = x.permute(0,2,3,1).reshape(batch_size, pooled_patch_length, dim)
+        return x
+
 
 
 def cosine_lr_schedule(optimizer, epoch, max_epoch, init_lr, min_lr):

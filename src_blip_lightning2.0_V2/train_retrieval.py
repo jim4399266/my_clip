@@ -112,6 +112,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
     if args.debug:
-        config['devices'] = 1
+        config['devices'] = [3]
         config['fast_dev_run'] = 2
     main(args, config)

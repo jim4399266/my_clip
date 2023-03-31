@@ -9,8 +9,9 @@ from collections import defaultdict
 import torch.distributed as dist
 from .dist_utils import all_gather_with_grad, concat_all_gather
 
-
 def in_modality_g2l_loss(local_feature, global_feature, temp, attention_mask=None):
+    fill = 10000.
+    # fill = 100.
     global_feature = global_feature.unsqueeze(1)
     bs, local_len, dim = local_feature.size()
     local_feature_n = local_feature.reshape(-1, dim)  # (bs * local_len) * dim
@@ -18,37 +19,38 @@ def in_modality_g2l_loss(local_feature, global_feature, temp, attention_mask=Non
 
     # Inner product for positive samples. Outer product for negative. We need to do it this way
     # for the multiclass loss. For the outer product, we want a 'bs x bs x local_len x 1' tensor.
-    u_p = torch.matmul(local_feature, global_feature.permute(0, 2, 1)).unsqueeze(-1) / temp # bs x local_len x 1 x 1
+    u_pos = torch.matmul(local_feature, global_feature.permute(0, 2, 1)).unsqueeze(-1) / temp # bs x local_len x 1 x 1
 
     # if 1 comes frm text, then attention_mask is not None
-    if attention_mask:
+    if attention_mask is not None:
         temp_mask = attention_mask.unsqueeze(-1).unsqueeze(-1)
-        u_p = (temp_mask * u_p) + (10000. * (1 - temp_mask))
-        u_p = u_p.masked_fill(temp_mask, 10000.)
+        u_pos = u_pos.masked_fill(temp_mask != 1, fill)
 
-    u_n = torch.matmul(global_feature_n, local_feature_n.T) / temp  # bs x (bs * local_len)
-    u_n = u_n.reshape(bs, 1, bs, local_len).permute(0, 2, 3, 1)    # bs x bs x local_len x 1
+    u_neg = torch.matmul(global_feature_n, local_feature_n.T) / temp  # bs x (bs * local_len)
+    u_neg = u_neg.reshape(bs, 1, bs, local_len).permute(0, 2, 3, 1)    # bs x bs x local_len x 1
 
     # We need to mask the diagonal part of the negative tensor
     mask = torch.eye(bs)[:, :, None, None].to(local_feature.device)  # bs x bs x 1 x 1
     n_mask = 1 - mask
 
     # Masking is done by shifting the diagonal before exp
-    u_n = (n_mask * u_n) - (10000. * (1 - n_mask))   # mask out "self" examples
+    # u_n = (n_mask * u_n) - (fill * (1 - n_mask))   # mask out "self" examples
+    u_neg = u_neg.masked_fill(n_mask != 1, fill)   # mask out "self" examples
 
     # if 1 comes from text, we mask out the padding tokens
-    if attention_mask:
-        temp_mask = attention_mask.unsqueeze(0).unsqueeze(-1).expend(bs, -1, -1, -1)  # bs x bs x local_len x 1
-        u_n = (temp_mask * u_n) - (10000. * (1 - temp_mask))
-    u_n = u_n.reshape(bs, bs * local_len, 1).\
-        unsqueeze(1).expend(-1, local_len, -1, -1) # bs x local_len x (bs*local_len) x 1
+    if attention_mask is not None:
+        temp_mask = attention_mask.unsqueeze(0).unsqueeze(-1).expand(bs, -1, -1, -1)  # bs x bs x local_len x 1
+        # u_n = (temp_mask * u_n) - (fill * (1 - temp_mask))
+        u_neg = u_neg.masked_fill(temp_mask != 1, fill)
+    u_neg = u_neg.reshape(bs, bs * local_len, 1).\
+        unsqueeze(1).expand(-1, local_len, -1, -1) # bs x local_len x (bs*local_len) x 1
 
     # Since this is multiclass, we concat the positive along the class dimension before performing log softmax.
-    pred_lgt = torch.cat([u_p, u_n], dim=2)
+    pred_lgt = torch.cat([u_pos, u_neg], dim=2)
     pred_log = F.log_softmax(pred_lgt, dim=2)
 
     # The positive score is the first element of the log softmax
-    if attention_mask:
+    if attention_mask is not None:
         loss = (torch.sum(-pred_log[:, :, 0].squeeze(), dim=1) / torch.sum(attention_mask, dim=1)).mean()
     else:
         loss = -pred_log[:, :, 0].mean()
@@ -118,7 +120,7 @@ def train_irtr(pl_module, batch, phase):
         loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1) * sim_targets, dim=1).mean()
 
     # add in-modality g2l loss (in-modality global to local)
-    loss_t2t_IM_g2l = in_modality_g2l_loss(text_feat_m_l, text_feat, pl_module.temp, text.attention_mask[:, 1:, :])
+    loss_t2t_IM_g2l = in_modality_g2l_loss(text_feat_m_l, text_feat, pl_module.temp, text.attention_mask[:, 1:])
     loss_i2i_IM_g2l = in_modality_g2l_loss(image_feat_m_l, image_feat, pl_module.temp)
 
     # add in-modality g2g loss (in-modality local to local)
