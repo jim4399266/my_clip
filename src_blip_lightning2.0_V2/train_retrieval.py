@@ -106,12 +106,16 @@ def main(args, config):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/retrieval_coco.yaml')
+    parser.add_argument('--devices', default='')
     parser.add_argument('--evaluate', action='store_true')
     parser.add_argument('--test_only', action='store_true')
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
+
+    if args.devices != '':
+        config['devices'] = eval(args.devices)
     if args.debug:
-        config['devices'] = [3]
         config['fast_dev_run'] = 2
+        config['shuffle'] = False
     main(args, config)

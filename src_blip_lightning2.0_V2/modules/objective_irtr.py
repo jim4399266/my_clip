@@ -9,32 +9,117 @@ from collections import defaultdict
 import torch.distributed as dist
 from .dist_utils import all_gather_with_grad, concat_all_gather
 
+# def in_modality_g2l_loss(global_feature, local_feature, temp, attention_mask=None):
+#     '''
+#     :param global_feature: bs x dim
+#     :param local_feature: bs x len x dim
+#     :param temp: matmul temperature
+#     :param attention_mask: text attention mask: bs x len
+#     :return:
+#     '''
+#     FILL = float('-inf')
+#     global_feature = global_feature.unsqueeze(1)   # bs x 1 x dim
+#     bs, local_len, dim = local_feature.size()
+#     # 正样本对应的 global_feature 和 local_feature 进行点积，越小越好
+#     logits_pos = torch.matmul(local_feature, global_feature.permute(0, 2, 1)) / temp # bs x len x 1
+#     # 对文本填充的部分进行遮蔽，遮蔽部分赋值 负无穷，去除 softmax 时的影响
+#     if attention_mask is not None:
+#         logits_pos = logits_pos.masked_fill(attention_mask != 1, FILL)
+#
+#     # 接下来对所有负样本进行点积，越大越好
+#     # 每个样本的 global feature 需要与所有样本的 local feature 计算
+#     # 相当于每个正样本中的 global feature:[1 x dim] 需要与 每个负样本中的每个token(bs * len)进行点积
+#     # 即  global_feature_n: bs x dim        local_feature_n: (bs * local_len) x dim
+#     global_feature_n, local_feature_n = global_feature.reshape(-1, dim), local_feature.reshape(-1, dim)
+#     logits_neg = torch.matmul(global_feature_n, local_feature_n.T) / temp  # bs x (bs * local_len)
+#     logits_neg = logits_neg.reshape(bs, bs, local_len)  # bs x bs x local_len
+#     # 首先需要对正样本进行遮蔽
+#     tmp_mask = 1 - torch.eye(bs)[:, :, None, None]
+#     logits_neg = logits_neg.masked_fill(tmp_mask != 1, FILL)
+#     # 对文本填充的部分进行遮蔽，遮蔽部分赋值 负无穷，去除 softmax 时的影响
+#     if attention_mask is not None:
+#         tmp_mask = attention_mask.unsqueeze(0)   # 1 x bs x len
+#         logits_neg = logits_neg.masked_fill(tmp_mask != 1, FILL)
+
+
+
 def in_modality_g2l_loss(local_feature, global_feature, temp, attention_mask=None):
-    fill = 10000.
-    # fill = 100.
+    '''
+    :param global_feature: bs x dim
+    :param local_feature: bs x len x dim
+    :param temp: matmul temperature
+    :param attention_mask: text attention mask: bs x len
+    :return:
+    '''
+    FILL = float('-inf')
+    global_feature = global_feature.unsqueeze(1)   # bs x 1 x dim
+    bs, local_len, dim = local_feature.size()
+
+    # 每个样本的 global feature 需要与所有样本的 local feature 计算
+    # 相当于每个正样本中的 global feature:[1 x dim] 需要与 每个负样本中的每个token(bs * len)进行点积
+    # 即  global_feature_n: bs x dim        local_feature_n: (bs * local_len) x dim
+    global_feature_n, local_feature_n = global_feature.reshape(-1, dim), local_feature.reshape(-1, dim)
+    logits = torch.matmul(global_feature_n, local_feature_n.T)  # bs x (bs * local_len)
+    logits = logits.reshape(bs, bs, local_len)  # bs x bs x local_len # 其中对角线上的是正样本，其余为负样本
+    # 对于文本，需要对填充部分进行遮蔽，遮蔽部分赋值 负无穷，去除 softmax 时的影响
+    if attention_mask is not None:
+        tmp_mask = attention_mask.unsqueeze(0)   # 1 x bs x len，会自动广播
+        logits = logits.masked_fill(tmp_mask != 1, FILL)
+    pred_log = F.log_softmax(logits, dim=1)   # 这里 dim=0 或 1 都可以
+    labels = torch.eye(bs).unsqueeze(-1).to(attention_mask.device)  # bs x bs x 1
+    if attention_mask is not None:
+        tmp_mask = attention_mask.unsqueeze(0).expand(bs, -1, -1) # bs x bs x len
+        labels = labels.masked_fill(tmp_mask != 1, -100)
+
+    loss_t2t = -torch.sum(F.log_softmax(sim_t2t, dim=1) * sim_targets, dim=1).mean()
+    loss = (torch.sum(-pred_log[:, :, 0].squeeze(), dim=1) / torch.sum(attention_mask, dim=1)).mean()
+    # TODO
+
+
+    # 可以去掉这部分，cross_entropy 会忽略
+
+
+    # 构建正样本标签，文本填充标记-100
+    # labels = 1 - torch.eye(bs).unsqueeze(-1).to(attention_mask.device)  # bs x bs x 1
+    # if attention_mask is not None:
+    #     tmp_mask = attention_mask.unsqueeze(0).expand(bs, -1, -1) # bs x bs x len
+    #     labels = labels.masked_fill(tmp_mask != 1, -100)
+    #
+    # # 使用 F.cross_entropy 计算损失，因为可以用到 ignore_index
+    # # F.cross_entropy 要求 pred: [N, C, d1, d2, ..., dk]    label: [N, d1, d2,...,dk]
+    # # 即 pred 比 label 多出一个 class 的维度，因此需要将 logits 扩充最后一个维度实现 token 的二分类
+    # logits = torch.sigmoid(logits).unsqueeze(-1)  # bs x bs x local_len x 1
+    # logits = torch.cat([logits, 1-logits], dim=-1) # bs x bs x local_len x 2
+    # loss = F.cross_entropy(logits.permute(0, 3, 1, 2), labels, ignore_index=-100)
+    # return loss
+
+
+def in_modality_g2l_loss_o(local_feature, global_feature, temp, attention_mask=None):
+    fill = float('-inf')
     global_feature = global_feature.unsqueeze(1)
     bs, local_len, dim = local_feature.size()
-    local_feature_n = local_feature.reshape(-1, dim)  # (bs * local_len) * dim
-    global_feature_n = global_feature.reshape(-1, dim)  # bs * dim
 
     # Inner product for positive samples. Outer product for negative. We need to do it this way
     # for the multiclass loss. For the outer product, we want a 'bs x bs x local_len x 1' tensor.
+    # 对应正样本的 global_feature 和 local_feature 进行点积
     u_pos = torch.matmul(local_feature, global_feature.permute(0, 2, 1)).unsqueeze(-1) / temp # bs x local_len x 1 x 1
-
     # if 1 comes frm text, then attention_mask is not None
     if attention_mask is not None:
         temp_mask = attention_mask.unsqueeze(-1).unsqueeze(-1)
         u_pos = u_pos.masked_fill(temp_mask != 1, fill)
 
+    # 为了让正样本和所有负样本的所有 local_feature 进行计算，需要将 local_feature 前两个维度合并，留最后一个维度进行计算
+    local_feature_n = local_feature.reshape(-1, dim)  # (bs * local_len) * dim
+    global_feature_n = global_feature.reshape(-1, dim)  # bs * dim
     u_neg = torch.matmul(global_feature_n, local_feature_n.T) / temp  # bs x (bs * local_len)
     u_neg = u_neg.reshape(bs, 1, bs, local_len).permute(0, 2, 3, 1)    # bs x bs x local_len x 1
 
     # We need to mask the diagonal part of the negative tensor
+    # 需要将正样本遮住
     mask = torch.eye(bs)[:, :, None, None].to(local_feature.device)  # bs x bs x 1 x 1
     n_mask = 1 - mask
 
     # Masking is done by shifting the diagonal before exp
-    # u_n = (n_mask * u_n) - (fill * (1 - n_mask))   # mask out "self" examples
     u_neg = u_neg.masked_fill(n_mask != 1, fill)   # mask out "self" examples
 
     # if 1 comes from text, we mask out the padding tokens
@@ -48,6 +133,7 @@ def in_modality_g2l_loss(local_feature, global_feature, temp, attention_mask=Non
     # Since this is multiclass, we concat the positive along the class dimension before performing log softmax.
     pred_lgt = torch.cat([u_pos, u_neg], dim=2)
     pred_log = F.log_softmax(pred_lgt, dim=2)
+    # pred_log = pred_log.masked_fill(attention_mask != 1, 0.)
 
     # The positive score is the first element of the log softmax
     if attention_mask is not None:
@@ -119,7 +205,7 @@ def train_irtr(pl_module, batch, phase):
         loss_i2t = -torch.sum(F.log_softmax(sim_i2t, dim=1) * sim_targets, dim=1).mean()
         loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1) * sim_targets, dim=1).mean()
 
-    # add in-modality g2l loss (in-modality global to local)
+    # add in-modality g2l loss (in-modality global to local)  # TODO
     loss_t2t_IM_g2l = in_modality_g2l_loss(text_feat_m_l, text_feat, pl_module.temp, text.attention_mask[:, 1:])
     loss_i2i_IM_g2l = in_modality_g2l_loss(image_feat_m_l, image_feat, pl_module.temp)
 
