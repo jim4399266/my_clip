@@ -229,8 +229,8 @@ def train_irtr(pl_module, batch, phase):
     loss_i2i_IM_g2l = in_modality_g2l_loss(image_feat_m_l, image_feat, pl_module.temp)
 
     # add in-modality g2g loss (in-modality local to local)
-    sim_i2i = image_feat @ image_feat_m_all / self.temp
-    sim_t2t = text_feat @ text_feat_m_all / self.temp
+    sim_i2i = image_feat @ image_feat_m_all / pl_module.temp
+    sim_t2t = text_feat @ text_feat_m_all / pl_module.temp
     loss_i2i = -torch.sum(F.log_softmax(sim_i2i, dim=1) * sim_targets, dim=1).mean()
     loss_t2t = -torch.sum(F.log_softmax(sim_t2t, dim=1) * sim_targets, dim=1).mean()
 
