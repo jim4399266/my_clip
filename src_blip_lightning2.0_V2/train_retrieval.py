@@ -88,6 +88,10 @@ def main(args, config):
         accumulate_grad_batches=grad_steps,
         # weights_summary='top',
         fast_dev_run=config['fast_dev_run'],
+        # limit_train_batches=config.get(config['limit_train_batches'], None),
+        # limit_val_batches=config.get(config['limit_val_batches'], None),
+        # limit_test_batches=config.get(config['limit_test_batches'], None),
+        # limit_predict_batches=config.get(config['limit_predict_batches'], None),
         num_sanity_val_steps=config['num_sanity_val_steps'],
         val_check_interval=config['val_check_interval'],
     )
@@ -99,7 +103,8 @@ def main(args, config):
         trainer.validate(model, datamodule=dm)
     else:
         trainer.fit(model, datamodule=dm)
-        weight_paths = list(Path(checkpoint_callback.dirpath).rglob('*.[pc][tk][hp]*'))
+        weight_paths = list(trainer.checkpoint_callback.best_k_models.keys())
+        # weight_paths = list(Path(checkpoint_callback.dirpath).rglob('*.[pc][tk][hp]*'))
         for ckpt in weight_paths:
             trainer.test(model, datamodule=dm, ckpt_path=str(ckpt))
 
@@ -116,6 +121,10 @@ if __name__ == '__main__':
     if args.devices != '':
         config['devices'] = eval(args.devices)
     if args.debug:
-        config['fast_dev_run'] = 2
+        config['train_dataset_len'] = int(10 * config['per_gpu_batchsize'])
+        config['val_dataset_len'] = int(5 * config['per_gpu_batchsize'])
+        config['test_dataset_len'] = int(5 * config['per_gpu_batchsize'])
+        # config['fast_dev_run'] = 2
         config['shuffle'] = False
+        config['num_workers'] = 0
     main(args, config)

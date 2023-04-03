@@ -602,7 +602,7 @@ def val_irtr(pl_module, data_loader):
     # if dist.distributed_available():
     #     pl_module.trainer.strategy.barrier()
 
-    if dist.is_available():
+    if pl_module.trainer.world_size > 1:
         torch.distributed.barrier()
         torch.distributed.all_reduce(score_matrix_i2t, op=torch.distributed.ReduceOp.SUM)
         torch.distributed.all_reduce(score_matrix_t2i, op=torch.distributed.ReduceOp.SUM)
