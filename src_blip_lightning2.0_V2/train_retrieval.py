@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 from pathlib import Path
 
 # from datamodules.multitask_datamodule import MTDataModule
-# from modules.model_module import ModelModule
+from modules.model_retrieval import RetrievalModule
 from modules.blip_module import BLIPModule
 from datamodules import build_datamodule
 
@@ -62,8 +62,8 @@ def main(args, config):
     callbacks = [modelsummary_callback, checkpoint_callback, lr_callback]
 
     dm = build_datamodule(config)
-    model = BLIPModule(config)
-
+    # model = BLIPModule(config)
+    model = RetrievalModule.from_pretrained(config)
 
     trainer = pl.Trainer(
         # resume_from_checkpoint=config['load_path'],
