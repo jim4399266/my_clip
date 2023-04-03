@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import numpy as np
+import functools
 from collections import defaultdict
 import torch.distributed as dist
 from .dist_utils import all_gather_with_grad, concat_all_gather
@@ -60,57 +61,6 @@ def in_modality_g2l_loss(local_feature, global_feature, temp=1., attention_mask=
         pred_log = -pred_log[:, :, 0]
         loss = pred_log.mean()
     return loss
-
-
-
-# def in_modality_g2l_loss(local_feature, global_feature, temp, attention_mask=None):
-#     '''
-#     :param global_feature: bs, dim
-#     :param local_feature: bs, len, dim
-#     :param temp: matmul temperature
-#     :param attention_mask: text attention mask: bs, len
-#     :return:
-#     '''
-#     FILL = float('-inf')
-#     global_feature = global_feature.unsqueeze(1)   # bs, 1, dim
-#     bs, local_len, dim = local_feature.size()
-#
-#     # 每个样本的 global feature 需要与所有样本的 local feature 计算
-#     # 相当于每个正样本中的 global feature:[1, dim] 需要与 每个负样本中的每个token(bs * len)进行点积
-#     # 即  global_feature_n: bs, dim        local_feature_n: (bs * local_len), dim
-#     global_feature_n, local_feature_n = global_feature.reshape(-1, dim), local_feature.reshape(-1, dim)
-#     logits = torch.matmul(global_feature_n, local_feature_n.T)  / temp # bs, (bs * local_len)
-#     logits = logits.reshape(bs, bs, local_len)  # bs, bs, local_len # 其中对角线上的是正样本，其余为负样本
-#     # 对于文本，需要对填充部分进行遮蔽，遮蔽部分赋值 负无穷，去除 softmax 时的影响
-#     if attention_mask is not None:
-#         tmp_mask = attention_mask.unsqueeze(0)   # 1, bs, len，会自动广播
-#         logits = logits.masked_fill(tmp_mask != 1, FILL)
-#     pred_log = F.log_softmax(logits, dim=1)   # 这里 dim=0 或 1 都可以
-#     labels = torch.eye(bs).unsqueeze(-1).to(attention_mask.device)  # bs, bs, 1
-#     if attention_mask is not None:
-#         tmp_mask = attention_mask.unsqueeze(0).expand(bs, -1, -1) # bs, bs, len
-#         labels = labels.masked_fill(tmp_mask != 1, -100)
-#
-#     loss_t2t = -torch.sum(F.log_softmax(sim_t2t, dim=1) * sim_targets, dim=1).mean()
-#     loss = (torch.sum(-pred_log[:, :, 0].squeeze(), dim=1) / torch.sum(attention_mask, dim=1)).mean()
-#
-#
-#     # 可以去掉这部分，cross_entropy 会忽略
-#
-#
-#     # 构建正样本标签，文本填充标记-100
-#     # labels = 1 - torch.eye(bs).unsqueeze(-1).to(attention_mask.device)  # bs, bs, 1
-#     # if attention_mask is not None:
-#     #     tmp_mask = attention_mask.unsqueeze(0).expand(bs, -1, -1) # bs, bs, len
-#     #     labels = labels.masked_fill(tmp_mask != 1, -100)
-#     #
-#     # # 使用 F.cross_entropy 计算损失，因为可以用到 ignore_index
-#     # # F.cross_entropy 要求 pred: [N, C, d1, d2, ..., dk]    label: [N, d1, d2,...,dk]
-#     # # 即 pred 比 label 多出一个 class 的维度，因此需要将 logits 扩充最后一个维度实现 token 的二分类
-#     # logits = torch.sigmoid(logits).unsqueeze(-1)  # bs, bs, local_len, 1
-#     # logits = torch.cat([logits, 1-logits], dim=-1) # bs, bs, local_len, 2
-#     # loss = F.cross_entropy(logits.permute(0, 3, 1, 2), labels, ignore_index=-100)
-#     # return loss
 
 
 def in_modality_g2l_loss_o(local_feature, global_feature, temp, attention_mask=None):
@@ -273,10 +223,11 @@ def train_irtr(pl_module, batch, phase):
 
         # select a negative image (from all ranks) for each text
         image_embeds_neg = []
+        image_feat_neg = []  # for triplet loss
         for b in range(bs):
             neg_idx = torch.multinomial(weights_t2i[b], 1).item()
             image_embeds_neg.append(image_embeds_world[neg_idx])
-        image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+            image_feat_neg.append(image_feat_world[neg_idx])
 
         # select a negative text (from all ranks) for each image
         input_ids_world = concat_all_gather(encoder_input_ids, pl_module.trainer.world_size)
@@ -284,10 +235,13 @@ def train_irtr(pl_module, batch, phase):
 
         text_ids_neg = []
         text_atts_neg = []
+        text_feat_neg = [] # for triplet loss
         for b in range(bs):
             neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+            text_feat_neg.append(text_feat_world[neg_idx])
             text_ids_neg.append(input_ids_world[neg_idx])
             text_atts_neg.append(att_mask_world[neg_idx])
+
 
     else:  # 仅从当前卡上的批次中抽取负样本
         with torch.no_grad():
@@ -304,21 +258,41 @@ def train_irtr(pl_module, batch, phase):
 
             # select a negative image (from same rank) for each text
         image_embeds_neg = []
+        image_feat_neg = []  # for triplet loss
         for b in range(bs):
             neg_idx = torch.multinomial(weights_t2i[b], 1).item()
             image_embeds_neg.append(image_embeds[neg_idx])
-        image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+            image_feat_neg.append(image_feat[neg_idx])
 
         # select a negative text (from same rank) for each image
         text_ids_neg = []
         text_atts_neg = []
+        text_feat_neg = []  # for triplet loss
         for b in range(bs):
             neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+            text_feat_neg.append(text_feat[neg_idx])  # for triplet loss
             text_ids_neg.append(encoder_input_ids[neg_idx])
             text_atts_neg.append(text.attention_mask[neg_idx])
 
+    image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+    image_feat_neg = torch.stack(image_feat_neg, dim=0)
+
     text_ids_neg = torch.stack(text_ids_neg, dim=0)
     text_atts_neg = torch.stack(text_atts_neg, dim=0)
+    text_feat_neg = torch.stack(text_feat_neg, dim=0)
+
+    ###============== Image-text Triple ======================
+    # 构建三元组
+    def distance_f(x, y, temp):
+        return x @ y.t() / temp
+    loss_triplet_i2t = F.triplet_margin_with_distance_loss(
+        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=5,
+        distance_function=functools.partial(distance_f, temp=pl_module.temp))
+    loss_triplet_t2i = F.triplet_margin_with_distance_loss(
+        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=5,
+        distance_function=functools.partial(distance_f, temp=pl_module.temp))
+    loss_triplet = (loss_triplet_i2t + loss_triplet_t2i) / 2
+
     # 这里实现文本和图片的负样本配对，image_embeds_neg是image_embeds_neg对应的负样本，text_ids_neg是image_embeds对应的负样本
     text_ids_all = torch.cat([encoder_input_ids, text_ids_neg], dim=0)
     text_atts_all = torch.cat([text.attention_mask, text_atts_neg], dim=0)
@@ -340,7 +314,7 @@ def train_irtr(pl_module, batch, phase):
                            dim=0).to(image.device)
     loss_itm = F.cross_entropy(vl_output, itm_labels)
 
-    irtr_loss = loss_itm + loss_itc
+    irtr_loss = loss_itm + loss_itc + loss_triplet
     irtr_loss_ = getattr(pl_module, f"{phase}_irtr_loss")(irtr_loss)
     pl_module.log(f"irtr/{phase}/itc_loss", loss_itc)
     pl_module.log(f"irtr/{phase}/itm_loss", loss_itm)
