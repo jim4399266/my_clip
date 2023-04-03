@@ -594,6 +594,7 @@ def recall_eval(scores_i2t, scores_t2i, index_mapper):
 
     # Images->Text
     ranks = np.zeros(scores_i2t.shape[0])
+    print(f'Target text len:{ranks}')
     for index, score in enumerate(scores_i2t):
         inds = np.argsort(score)[::-1]
         # Score
@@ -611,7 +612,7 @@ def recall_eval(scores_i2t, scores_t2i, index_mapper):
 
     # Text->Images
     ranks = np.zeros(scores_t2i.shape[0])
-
+    print(f'Target image len:{ranks}')
     for index, score in enumerate(scores_t2i):
         inds = np.argsort(score)[::-1]
         ranks[index] = np.where(inds == txt2img[index])[0][0]
