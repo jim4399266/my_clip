@@ -73,7 +73,7 @@ class RetrievalModule(BaseModule):
 
         self.negative_all_rank = config['negative_all_rank']
         # 配置评估指标
-        model_utils.set_metrics(self)
+        self.set_metrics()
 
     # raise NotImplementedError("return tuple of train dataset class")
     def forward(self, batch, phase):
@@ -81,10 +81,10 @@ class RetrievalModule(BaseModule):
 
     def on_train_epoch_start(self) -> None:
         config = self.hparams.config
-        model_utils.cosine_lr_schedule(self.trainer.optimizers[0], self.current_epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
+        # cosine_lr_schedule(self.trainer.optimizers[0], self.current_epoch, config['max_epoch'], config['optimizer']['init_lr'], config['optimizer']['min_lr'])
 
     def training_step(self, batch, batch_idx):
-        model_utils.set_tasks(self)
+        # self.set_tasks()
         if self.trainer.current_epoch > 0:
             alpha = self.hparams.config['alpha']
         else:
@@ -92,10 +92,21 @@ class RetrievalModule(BaseModule):
         self.hparams.config['cur_alpha'] = alpha
 
         irtr_loss = self(batch, phase='train')
+
+        lr = self.trainer.lr_scheduler_configs[0].scheduler.get_last_lr()[0]
+        if self.trainer.global_step % self.trainer.log_every_n_steps == 0 \
+                and batch_idx % self.trainer.accumulate_grad_batches == 0:
+            self.print('Global step:{global_step}.'
+                       'Train Loss: {loss:.4f} '
+                       'LR: {lr:.3E}'
+                       .format(global_step=self.trainer.global_step,
+                               loss=irtr_loss,
+                               lr=lr))
         return irtr_loss
 
     def on_train_epoch_end(self) -> None:
-        model_utils.epoch_wrapup(self, phase='train')
+        self.epoch_wrapup(phase='train')
+        self.training_step_outputs.clear()  # free memory
 
     def validation_step(self, batch, batch_idx):
         pass
@@ -103,24 +114,38 @@ class RetrievalModule(BaseModule):
     def on_validation_epoch_end(self) -> None:
         # 不传入out了，直接从self.validation_step_outputs获取每个val step的返回
         # all_preds = torch.stack(self.validation_step_outputs)
-        model_utils.epoch_wrapup(self, phase='val')
+        self.epoch_wrapup(phase='val')
+        self.validation_step_outputs.clear()  # free memory
 
     def test_step(self, batch, batch_idx):
         pass
 
     def on_test_epoch_end(self) -> None:
-        model_utils.epoch_wrapup(self, phase='test')
+        self.epoch_wrapup(phase='test')
+
+    # def configure_optimizers(self):
+    #     opt_config = self.hparams.config['optimizer']
+    #     optimizer = torch.optim.AdamW(params=self.parameters(), lr=opt_config['init_lr'],
+    #                                   weight_decay=opt_config['weight_decay'])
+    #
+    #     # cosine_lr_schedule(optimizer, self.current_epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
+    #     return {
+    #         'optimizer': optimizer
+    #     }
 
     def configure_optimizers(self):
-        config = self.hparams.config
-        optimizer = torch.optim.AdamW(params=self.parameters(), lr=config['init_lr'],
-                                      weight_decay=config['weight_decay'])
-
-        # cosine_lr_schedule(optimizer, self.current_epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
+        opt_config = self.hparams.config['optimizer']
+        max_steps, warmup_steps = self.cal_steps()
+        optimizer = torch.optim.AdamW(params=self.parameters(),
+                                      lr=opt_config['init_lr'],
+                                      weight_decay=opt_config['weight_decay'],
+                                      eps=opt_config['eps'],
+                                      betas=opt_config['betas'])
+        sched = self.get_scheduler(optimizer, warmup_steps, max_steps)
         return {
-            'optimizer': optimizer
+            'optimizer': optimizer,
+            'lr_scheduler': sched,
         }
-
         # return {
         #     "optimizer": optimizer,
         #     "lr_scheduler": {
@@ -144,5 +169,10 @@ class RetrievalModule(BaseModule):
         return x
 
 
+def cosine_lr_schedule(optimizer, epoch, max_epoch, init_lr, min_lr):
+    """Decay the learning rate"""
+    lr = (init_lr - min_lr) * 0.5 * (1. + math.cos(math.pi * epoch / max_epoch)) + min_lr
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
 

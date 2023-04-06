@@ -24,14 +24,19 @@ def main(args, config):
     grad_steps = max(config['batch_size'] // (
             config['per_gpu_batchsize'] * max(1, config['num_device']) * config['num_nodes']
     ), 1)
+    config['gradient_accumulation_steps'] = grad_steps
 
     log_dir = config['log_dir']
     if config['pretrained'] == "":
         task = '-'.join((list(config['task_name'].keys())))
-        log_name = f'{task}_bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_from_{config["vit_name"]}_{config["image_size"]}_{config["tokenizer_name"]}'
+        log_name = f'{task}_bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_' \
+                   f'epoch{config["max_epoch"]}_lr{config["optimizer"]["init_lr"]}_' \
+                   f'from_{config["vit_name"]}_{config["image_size"]}_{config["tokenizer_name"]}'
     else:
         task = '-'.join((list(config['task_name'].keys())))
-        log_name = f'{task}_bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_epoch{config["max_epoch"]}_lr{config["learning_rate"]}_is{config["image_size"]}_from_{config["pretrained"].split("/")[-1].split(".")[0]}'
+        log_name = f'{task}_bs{config["batch_size"]}_pbs{config["per_gpu_batchsize"]}_' \
+                   f'epoch{config["max_epoch"]}_lr{config["optimizer"]["init_lr"]}_' \
+                   f'is{config["image_size"]}_from_{config["pretrained"].split("/")[-1].split(".")[0]}'
     output_dir = config['output_dir']
     if output_dir != None or "" or '':
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -46,10 +51,10 @@ def main(args, config):
     modelsummary_callback = pl.callbacks.ModelSummary(max_depth=1)
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=saved_dir / f"version_{logger.version}" if output_dir != (None or "" or '') else None,
-        filename='step{step}-val_score{irtr/val/r_mean:.4f}',
+        filename='step{step}-val_score{val/' + f'{task}' + '/r_mean:.4f}',
         auto_insert_metric_name=False,
         save_top_k=3,
-        monitor='irtr/val/r_mean',
+        monitor=f'val/{task}/r_mean',
         mode='max',
         save_last=False,
         verbose=True,
@@ -69,7 +74,7 @@ def main(args, config):
         # resume_from_checkpoint=config['load_path'],
         logger=logger,
         log_every_n_steps=10,
-        precision=16 if config['apex'] else config['precision'],
+        precision=config['precision'],
         # amp_backend='apex' if config['apex'] else "native",
         # amp_level=config['amp_level'] if config['apex'] else None,
 
@@ -121,10 +126,11 @@ if __name__ == '__main__':
     if args.devices != '':
         config['devices'] = eval(args.devices)
     if args.debug:
-        config['train_dataset_len'] = int(10 * config['per_gpu_batchsize'])
-        config['val_dataset_len'] = int(5 * config['per_gpu_batchsize'])
-        config['test_dataset_len'] = int(5 * config['per_gpu_batchsize'])
+        config['train_dataset_len'] = int(100 * config['per_gpu_batchsize'])
+        config['val_dataset_len'] = int(50 * config['per_gpu_batchsize'])
+        config['test_dataset_len'] = int(50 * config['per_gpu_batchsize'])
         # config['fast_dev_run'] = 2
         config['shuffle'] = False
         config['num_workers'] = 0
+    config['optimizer']['betas'] = eval(config['optimizer']['betas'])
     main(args, config)

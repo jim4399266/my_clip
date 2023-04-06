@@ -282,14 +282,14 @@ def train_irtr(pl_module, batch, phase):
     text_feat_neg = torch.stack(text_feat_neg, dim=0)
 
     ###============== Image-text Triple ======================
-    # 构建三元组
     def distance_f(x, y, temp):
-        return x @ y.t() / temp
+        # 点积越大越相似，但这里需要返回距离，因此添加负号
+        return -(x @ y.t() / temp)
     loss_triplet_i2t = F.triplet_margin_with_distance_loss(
-        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=5,
+        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=3,
         distance_function=functools.partial(distance_f, temp=pl_module.temp))
     loss_triplet_t2i = F.triplet_margin_with_distance_loss(
-        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=5,
+        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=1,
         distance_function=functools.partial(distance_f, temp=pl_module.temp))
     loss_triplet = (loss_triplet_i2t + loss_triplet_t2i) / 2
 
@@ -316,9 +316,10 @@ def train_irtr(pl_module, batch, phase):
 
     irtr_loss = loss_itm + loss_itc + loss_triplet
     irtr_loss_ = getattr(pl_module, f"{phase}_irtr_loss")(irtr_loss)
-    pl_module.log(f"irtr/{phase}/itc_loss", loss_itc)
-    pl_module.log(f"irtr/{phase}/itm_loss", loss_itm)
-    pl_module.log(f"irtr/{phase}/irtr_loss", irtr_loss)
+    pl_module.log(f"{phase}/irtr/itc_loss", loss_itc)
+    pl_module.log(f"{phase}/irtr/itm_loss", loss_itm)
+    pl_module.log(f"{phase}/irtr/triplet_loss", loss_triplet)
+    pl_module.log(f"{phase}/irtr/irtr_loss", irtr_loss)
     return irtr_loss
 
 # def train_irtr(pl_module, batch, phase):
@@ -612,7 +613,7 @@ def recall_eval(scores_i2t, scores_t2i, index_mapper):
 
     # Text->Images
     ranks = np.zeros(scores_t2i.shape[0])
-    print(f'Target image len:{ranks}')
+    print(f'Target image len:{len(ranks)}')
     for index, score in enumerate(scores_t2i):
         inds = np.argsort(score)[::-1]
         ranks[index] = np.where(inds == txt2img[index])[0][0]

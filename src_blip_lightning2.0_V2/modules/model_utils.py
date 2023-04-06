@@ -303,14 +303,14 @@ def epoch_wrapup(pl_module, phase):
         print(val_result)
         for item in ['txt_r1', 'txt_r5', 'txt_r10', 'txt_r_mean', 'img_r1', 'img_r5', 'img_r10', 'img_r_mean', 'r_mean']:
             pl_module.logger.experiment.add_scalar(
-                f"irtr/{phase}/{item}", val_result[item], pl_module.global_step
+                f"{phase}/irtr/{item}", val_result[item], pl_module.global_step
             )
 
         the_metric += (val_result['txt_r1'] + val_result['img_r1']) * 10 \
                       + (val_result['txt_r5'] + val_result['img_r5']) * 5 \
                       + val_result['txt_r10'] + val_result['img_r10']
-        pl_module.log(f'irtr/{phase}/the_metric', the_metric)
-        pl_module.log(f'irtr/{phase}/r_mean', val_result['r_mean'])
+        pl_module.log(f'{phase}/irtr/the_metric', the_metric)
+        pl_module.log(f'{phase}/irtr/r_mean', val_result['r_mean'])
 
     # if pl_module.trainer.
 
