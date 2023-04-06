@@ -73,7 +73,7 @@ def main(args, config):
     trainer = pl.Trainer(
         # resume_from_checkpoint=config['load_path'],
         logger=logger,
-        log_every_n_steps=10,
+        log_every_n_steps=50,
         precision=config['precision'],
         # amp_backend='apex' if config['apex'] else "native",
         # amp_level=config['amp_level'] if config['apex'] else None,

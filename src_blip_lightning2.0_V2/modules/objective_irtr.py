@@ -286,7 +286,7 @@ def train_irtr(pl_module, batch, phase):
         # 点积越大越相似，但这里需要返回距离，因此添加负号
         return -(x @ y.t() / temp)
     loss_triplet_i2t = F.triplet_margin_with_distance_loss(
-        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=3,
+        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=1,
         distance_function=functools.partial(distance_f, temp=pl_module.temp))
     loss_triplet_t2i = F.triplet_margin_with_distance_loss(
         anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=1,
