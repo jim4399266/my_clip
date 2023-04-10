@@ -120,12 +120,13 @@ def train_irtr(pl_module, batch, phase):
     caption = batch['text']
     alpha = pl_module.hparams.config['cur_alpha']
     idx = batch['image_index']
+    max_length = pl_module.hparams.config['max_text_len']
 
     image_embeds = pl_module.visual_encoder(image)
     image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
     image_feat = F.normalize(pl_module.vision_proj(image_embeds[:, 0, :]), dim=-1)
 
-    text = pl_module.tokenizer(caption, padding='max_length', truncation=True, max_length=35,
+    text = pl_module.tokenizer(caption, padding='max_length', truncation=True, max_length=max_length,
                           return_tensors="pt").to(image.device)
 
     text_output = pl_module.text_encoder(text.input_ids, attention_mask=text.attention_mask,
@@ -142,9 +143,11 @@ def train_irtr(pl_module, batch, phase):
     with torch.no_grad():
         pl_module._momentum_update()
         # -------  all image momentum features  -----------
+        # TODO 减少显存占用
         image_embeds_m = pl_module.visual_encoder_m(image)
         image_feat_m = F.normalize(pl_module.vision_proj_m(image_embeds_m[:, 0, :]), dim=-1)
         image_feat_m_all = torch.cat([image_feat_m.t(), pl_module.image_queue.clone().detach()], dim=1)
+        image_embeds_m_all = torch.cat([image_embeds_m, pl_module.image_embed_queue.clone().detach()], dim=0)
         #  momentum image local features
         image_feat_m_l = F.normalize(pl_module.vision_proj_m(image_embeds_m[:, 1:, :]), dim=-1)
         image_feat_m_l = pl_module.patch_pooling(image_feat_m_l)  # pooling for image patches
@@ -154,6 +157,8 @@ def train_irtr(pl_module, batch, phase):
                                             return_dict=True, mode='text')
         text_feat_m = F.normalize(pl_module.text_proj_m(text_output_m.last_hidden_state[:, 0, :]), dim=-1)
         text_feat_m_all = torch.cat([text_feat_m.t(), pl_module.text_queue.clone().detach()], dim=1)
+        text_input_ids_all = torch.cat([text.input_ids, pl_module.text_input_ids_queque.clone().detach()], dim=0)
+        text_attention_mask_all = torch.cat([text.attention_mask, pl_module.text_attention_mask_queue.clone().detach()], dim=0)
         # momentum text local features
         text_feat_m_l = F.normalize(pl_module.text_proj_m(text_output_m.last_hidden_state[:, 1:, :]), dim=-1)
 
@@ -189,12 +194,41 @@ def train_irtr(pl_module, batch, phase):
     idxs = concat_all_gather(idx, world_size=pl_module.trainer.world_size)
     pl_module._dequeue_and_enqueue(image_feat_m, text_feat_m, idxs)
 
+    ## 从所有队列中选择负样本
+    bs = image.size(0)
+    mask = torch.eq(idx, idx_all.t())
+    weights_i2t = F.softmax(sim_i2t, dim=1)
+    weights_i2t.masked_fill_(mask, 0)
+
+    weights_t2i = F.softmax(sim_t2i, dim=1)
+    weights_t2i.masked_fill_(mask, 0)
+
+    # select a negative image (from all ranks) for each text
+    image_embeds_neg = []
+    image_feat_neg = []  # for triplet loss
+    for b in range(bs):
+        neg_idx = torch.multinomial(weights_t2i[b], 1).item()
+        image_embeds_neg.append(image_embeds_m_all[neg_idx])
+        image_feat_neg.append(image_feat_m[neg_idx])
+
+    # # select a negative text (from all ranks) for each image
+    # input_ids_world = concat_all_gather(encoder_input_ids, pl_module.trainer.world_size)
+    # att_mask_world = concat_all_gather(text.attention_mask, pl_module.trainer.world_size)
+
+    text_ids_neg = []
+    text_atts_neg = []
+    text_feat_neg = []  # for triplet loss
+    for b in range(bs):
+        neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+        text_feat_neg.append(text_feat_m_all[neg_idx])
+        text_ids_neg.append(text_input_ids_all[neg_idx])
+        text_atts_neg.append(text_attention_mask_all[neg_idx])
+
     ###============== Image-text Matching ===================###
     encoder_input_ids = text.input_ids.clone()
     encoder_input_ids[:, 0] = pl_module.tokenizer.enc_token_id
 
     # forward the positve image-text pair         # 正相关的图文对进行融合，得到output_pos，是正相关图文对融合后的向量
-    bs = image.size(0)
     output_pos = pl_module.text_encoder(encoder_input_ids,
                                    attention_mask=text.attention_mask,
                                    encoder_hidden_states=image_embeds,
@@ -202,77 +236,77 @@ def train_irtr(pl_module, batch, phase):
                                    return_dict=True,
                                    )
 
-    if pl_module.negative_all_rank:  # 如果是分布式，从所有卡中抽取负样本
-        # compute sample similarity
-        with torch.no_grad():
-            mask = torch.eq(idx, idxs.t())
-
-            image_feat_world = concat_all_gather(image_feat, pl_module.trainer.world_size)
-            text_feat_world = concat_all_gather(text_feat, pl_module.trainer.world_size)
-
-            sim_i2t = image_feat @ text_feat_world.t() / pl_module.temp
-            sim_t2i = text_feat @ image_feat_world.t() / pl_module.temp
-
-            weights_i2t = F.softmax(sim_i2t, dim=1)
-            weights_i2t.masked_fill_(mask, 0)
-
-            weights_t2i = F.softmax(sim_t2i, dim=1)
-            weights_t2i.masked_fill_(mask, 0)
-
-        image_embeds_world = all_gather_with_grad(image_embeds, pl_module.trainer.world_size)
-
-        # select a negative image (from all ranks) for each text
-        image_embeds_neg = []
-        image_feat_neg = []  # for triplet loss
-        for b in range(bs):
-            neg_idx = torch.multinomial(weights_t2i[b], 1).item()
-            image_embeds_neg.append(image_embeds_world[neg_idx])
-            image_feat_neg.append(image_feat_world[neg_idx])
-
-        # select a negative text (from all ranks) for each image
-        input_ids_world = concat_all_gather(encoder_input_ids, pl_module.trainer.world_size)
-        att_mask_world = concat_all_gather(text.attention_mask, pl_module.trainer.world_size)
-
-        text_ids_neg = []
-        text_atts_neg = []
-        text_feat_neg = [] # for triplet loss
-        for b in range(bs):
-            neg_idx = torch.multinomial(weights_i2t[b], 1).item()
-            text_feat_neg.append(text_feat_world[neg_idx])
-            text_ids_neg.append(input_ids_world[neg_idx])
-            text_atts_neg.append(att_mask_world[neg_idx])
-
-
-    else:  # 仅从当前卡上的批次中抽取负样本
-        with torch.no_grad():
-            mask = torch.eq(idx, idx.t())
-
-            sim_i2t = image_feat @ text_feat.t() / pl_module.temp
-            sim_t2i = text_feat @ image_feat.t() / pl_module.temp
-
-            weights_i2t = F.softmax(sim_i2t, dim=1)
-            weights_i2t.masked_fill_(mask, 0)
-
-            weights_t2i = F.softmax(sim_t2i, dim=1)
-            weights_t2i.masked_fill_(mask, 0)
-
-            # select a negative image (from same rank) for each text
-        image_embeds_neg = []
-        image_feat_neg = []  # for triplet loss
-        for b in range(bs):
-            neg_idx = torch.multinomial(weights_t2i[b], 1).item()
-            image_embeds_neg.append(image_embeds[neg_idx])
-            image_feat_neg.append(image_feat[neg_idx])
-
-        # select a negative text (from same rank) for each image
-        text_ids_neg = []
-        text_atts_neg = []
-        text_feat_neg = []  # for triplet loss
-        for b in range(bs):
-            neg_idx = torch.multinomial(weights_i2t[b], 1).item()
-            text_feat_neg.append(text_feat[neg_idx])  # for triplet loss
-            text_ids_neg.append(encoder_input_ids[neg_idx])
-            text_atts_neg.append(text.attention_mask[neg_idx])
+    # if pl_module.negative_all_rank:  # 如果是分布式，从所有卡中抽取负样本
+    #     # compute sample similarity
+    #     with torch.no_grad():
+    #         mask = torch.eq(idx, idxs.t())
+    #
+    #         image_feat_world = concat_all_gather(image_feat, pl_module.trainer.world_size)
+    #         text_feat_world = concat_all_gather(text_feat, pl_module.trainer.world_size)
+    #
+    #         sim_i2t = image_feat @ text_feat_world.t() / pl_module.temp
+    #         sim_t2i = text_feat @ image_feat_world.t() / pl_module.temp
+    #
+    #         weights_i2t = F.softmax(sim_i2t, dim=1)
+    #         weights_i2t.masked_fill_(mask, 0)
+    #
+    #         weights_t2i = F.softmax(sim_t2i, dim=1)
+    #         weights_t2i.masked_fill_(mask, 0)
+    #
+    #     image_embeds_world = all_gather_with_grad(image_embeds, pl_module.trainer.world_size)
+    #
+    #     # select a negative image (from all ranks) for each text
+    #     image_embeds_neg = []
+    #     image_feat_neg = []  # for triplet loss
+    #     for b in range(bs):
+    #         neg_idx = torch.multinomial(weights_t2i[b], 1).item()
+    #         image_embeds_neg.append(image_embeds_world[neg_idx])
+    #         image_feat_neg.append(image_feat_world[neg_idx])
+    #
+    #     # select a negative text (from all ranks) for each image
+    #     input_ids_world = concat_all_gather(encoder_input_ids, pl_module.trainer.world_size)
+    #     att_mask_world = concat_all_gather(text.attention_mask, pl_module.trainer.world_size)
+    #
+    #     text_ids_neg = []
+    #     text_atts_neg = []
+    #     text_feat_neg = [] # for triplet loss
+    #     for b in range(bs):
+    #         neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+    #         text_feat_neg.append(text_feat_world[neg_idx])
+    #         text_ids_neg.append(input_ids_world[neg_idx])
+    #         text_atts_neg.append(att_mask_world[neg_idx])
+    #
+    #
+    # else:  # 仅从当前卡上的批次中抽取负样本
+    #     with torch.no_grad():
+    #         mask = torch.eq(idx, idx.t())
+    #
+    #         sim_i2t = image_feat @ text_feat.t() / pl_module.temp
+    #         sim_t2i = text_feat @ image_feat.t() / pl_module.temp
+    #
+    #         weights_i2t = F.softmax(sim_i2t, dim=1)
+    #         weights_i2t.masked_fill_(mask, 0)
+    #
+    #         weights_t2i = F.softmax(sim_t2i, dim=1)
+    #         weights_t2i.masked_fill_(mask, 0)
+    #
+    #         # select a negative image (from same rank) for each text
+    #     image_embeds_neg = []
+    #     image_feat_neg = []  # for triplet loss
+    #     for b in range(bs):
+    #         neg_idx = torch.multinomial(weights_t2i[b], 1).item()
+    #         image_embeds_neg.append(image_embeds[neg_idx])
+    #         image_feat_neg.append(image_feat[neg_idx])
+    #
+    #     # select a negative text (from same rank) for each image
+    #     text_ids_neg = []
+    #     text_atts_neg = []
+    #     text_feat_neg = []  # for triplet loss
+    #     for b in range(bs):
+    #         neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+    #         text_feat_neg.append(text_feat[neg_idx])  # for triplet loss
+    #         text_ids_neg.append(encoder_input_ids[neg_idx])
+    #         text_atts_neg.append(text.attention_mask[neg_idx])
 
     image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
     image_feat_neg = torch.stack(image_feat_neg, dim=0)
@@ -501,6 +535,7 @@ def val_irtr(pl_module, data_loader):
     # texts = data_loader.dataset.text
     texts = data_loader.dataset.corpus
     num_text = len(texts)
+    max_length = pl_module.hparams.config['max_text_len']
     # num_text = 1024
     text_bs = 256
     text_ids = []
@@ -509,7 +544,7 @@ def val_irtr(pl_module, data_loader):
     # print('Computing text features...')
     for i in tqdm(range(0, num_text, text_bs), desc='Computing text features...'):
         text = texts[i: min(num_text, i + text_bs)]
-        text_input = pl_module.tokenizer(text, padding='max_length', truncation=True, max_length=35,
+        text_input = pl_module.tokenizer(text, padding='max_length', truncation=True, max_length=max_length,
                                      return_tensors="pt").to(device)
         text_output = pl_module.text_encoder(text_input.input_ids, attention_mask=text_input.attention_mask, mode='text')
         text_embed = F.normalize(pl_module.text_proj(text_output.last_hidden_state[:, 0, :]))

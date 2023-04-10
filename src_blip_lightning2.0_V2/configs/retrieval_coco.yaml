@@ -14,7 +14,8 @@ shuffle: True # 训练集是否打乱
 task_name: {'irtr': 1}
 get_recall_metric: True
 top_k: 64
-queue_size: 57600
+queue_size: 16000
+#queue_size: 57600
 momentum: 0.995
 alpha: 0.4
 negative_all_rank: True
@@ -26,8 +27,8 @@ fast_dev_run: False # 快速检验，取 n 个train, val, test batches
 val_check_interval: 1.0 # 验证间隔（浮点数为每X个epoch验证一次，整数为每X个step验证一次）
 accelerator: 'gpu'
 devices: [3,4]
-batch_size: 200  # this is a desired batch size; pl trainer will accumulate gradients when per step batch is smaller.
-per_gpu_batchsize: 50  # you should define this manually with per_gpu_batch_size=#
+batch_size: 128  # this is a desired batch size; pl trainer will accumulate gradients when per step batch is smaller.
+per_gpu_batchsize: 32  # you should define this manually with per_gpu_batch_size=#
 num_nodes: 1
 pin_memory: True
 num_workers: 8
@@ -44,18 +45,19 @@ vit: 'base'
 #vit_name: 'ViT-B-16'
 #vit: '/home/tzj/pretrained_models/ViT/ViT-B-16.pt'  # vit模型权重
 image_size: 224 # 调整后的图片像素
-patch_size: 32 # 送入vit的图片块的像素
+patch_size: 16 # 送入vit的图片块的像素
 train_transform_keys: ["clip"] # 预处理图片的模型（将图片处理为image_size * image_size）
 val_transform_keys: ["clip"]
-#input_image_embed_size: 768
+input_image_embed_size: 256
 vit_grad_ckpt: True
 vit_ckpt_layer: 4
+
 
 # ----------------------  Text Setting  ----------------------
 tokenizer_name: 'roberta-base'
 tokenizer: '/home/tzj/pretrained_models/en-roberta-base'
 vocab_size: 50265
-#input_text_embed_size: 768
+input_text_embed_size: 256
 max_text_len: 40
 whole_word_masking: False # note that whole_word_masking does not work for RoBERTa
 mlm_prob: 0.15 # mlm遮罩比例

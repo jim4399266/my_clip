@@ -26,48 +26,42 @@ class RetrievalModule(BaseModule):
 
         vit = config['vit']
         image_size = config['image_size']
+        patch_size = config['patch_size']
         vit_grad_ckpt = config['vit_grad_ckpt']
         vit_ckpt_layer = config['vit_ckpt_layer']
         med_config = '/home/tzj/codes/my_clip/src_blip_lightning/configs/med_config.json'
-        embed_dim = 256
+        self.input_text_embed_size = config['input_text_embed_size']
+        self.input_image_embed_size = config['input_image_embed_size']
 
         self.queue_size = config['queue_size']
         self.momentum = config['momentum']
         self.distill = True
 
-        self.visual_encoder, vision_width = create_vit(vit, image_size, vit_grad_ckpt, vit_ckpt_layer)
+        self.visual_encoder, self.vision_width = create_vit(vit, image_size, patch_size, vit_grad_ckpt, vit_ckpt_layer)
         self.tokenizer = init_tokenizer()
         med_config = BertConfig.from_json_file(med_config)
-        med_config.encoder_width = vision_width
+        med_config.encoder_width = self.vision_width
         self.text_encoder = BertModel(config=med_config, add_pooling_layer=False)
+        self.text_width = self.text_encoder.config.hidden_size
 
-        text_width = self.text_encoder.config.hidden_size
+        self.vision_proj = nn.Linear(self.vision_width, self.input_image_embed_size)
+        self.text_proj = nn.Linear(self.text_width, self.input_text_embed_size)
 
-        self.vision_proj = nn.Linear(vision_width, embed_dim)
-        self.text_proj = nn.Linear(text_width, embed_dim)
-
-        self.itm_head = nn.Linear(text_width, 2)
+        self.itm_head = nn.Linear(self.text_width, 2)
 
         # create momentum encoders
-        self.visual_encoder_m, vision_width = create_vit(vit, image_size)
-        self.vision_proj_m = nn.Linear(vision_width, embed_dim)
+        self.visual_encoder_m, self.vision_width = create_vit(vit, image_size)
+        self.vision_proj_m = nn.Linear(self.vision_width, self.input_image_embed_size)
         self.text_encoder_m = BertModel(config=med_config, add_pooling_layer=False)
-        self.text_proj_m = nn.Linear(text_width, embed_dim)
+        self.text_proj_m = nn.Linear(self.text_width, self.input_text_embed_size)
 
         self.model_pairs = [[self.visual_encoder, self.visual_encoder_m],
                             [self.vision_proj, self.vision_proj_m],
                             [self.text_encoder, self.text_encoder_m],
                             [self.text_proj, self.text_proj_m],
                             ]
-        # create the queue
-        self.register_buffer("image_queue", torch.randn(embed_dim, self.queue_size))
-        self.register_buffer("text_queue", torch.randn(embed_dim, self.queue_size))
-        self.register_buffer("idx_queue", torch.full((1, self.queue_size), -100))
-        self.register_buffer("ptr_queue", torch.zeros(1, dtype=torch.long))
-
-        self.image_queue = nn.functional.normalize(self.image_queue, dim=0)
-        self.text_queue = nn.functional.normalize(self.text_queue, dim=0)
-
+        # # TODO 是否需要换位置
+        # self.copy_params()
 
         self.temp = nn.Parameter(0.07 * torch.ones([]))
 
@@ -78,10 +72,6 @@ class RetrievalModule(BaseModule):
     # raise NotImplementedError("return tuple of train dataset class")
     def forward(self, batch, phase):
         return objective_irtr.train_irtr(self, batch, phase)
-
-    def on_train_epoch_start(self) -> None:
-        config = self.hparams.config
-        # cosine_lr_schedule(self.trainer.optimizers[0], self.current_epoch, config['max_epoch'], config['optimizer']['init_lr'], config['optimizer']['min_lr'])
 
     def training_step(self, batch, batch_idx):
         # self.set_tasks()
@@ -168,6 +158,47 @@ class RetrievalModule(BaseModule):
         x = x.permute(0,2,3,1).reshape(batch_size, pooled_patch_length, dim)
         return x
 
+    def set_queue(self):
+        # create the queue
+        config = self.hparams.config
+        text_len = config['max_text_len']
+        image_len = (config['image_size'] // config['patch_size']) ** 2 + 1
+        self.register_buffer("image_queue", torch.randn(self.input_image_embed_size, self.queue_size))
+        self.register_buffer("text_queue", torch.randn(self.input_text_embed_size, self.queue_size))
+        self.register_buffer("image_embed_queue", torch.randn(self.queue_size, image_len, self.vision_width))
+        self.register_buffer("text_input_ids_queque", torch.full((self.queue_size, text_len), -1))
+        self.register_buffer("text_attention_mask_queue", torch.full((self.queue_size, text_len, self.text_width), -1))
+        self.register_buffer("idx_queue", torch.full((1, self.queue_size), -100))
+        self.register_buffer("ptr_queue", torch.zeros(1, dtype=torch.long))
+
+        self.image_queue = nn.functional.normalize(self.image_queue, dim=0)
+        self.text_queue = nn.functional.normalize(self.text_queue, dim=0)
+        self.image_embed_queue = nn.functional.normalize(self.image_embed_queue, dim=-1)
+    def reset_queue(self):
+        self.image_queue = torch.randn_like(self.image_queue)
+        self.image_queue = nn.functional.normalize(self.image_queue, dim=0)
+        self.image_embed_queue = torch.randn_like(self.image_embed_queue)
+        self.image_embed_queue = nn.functional.normalize(self.image_embed_queue, dim=-1)
+
+        self.text_queue = torch.randn_like(self.text_queue)
+        self.text_queue = nn.functional.normalize(self.text_queue, dim=0)
+        self.text_input_ids_queque = torch.full_like(self.text_input_ids_queque, -1)
+        self.text_attention_mask_queue = torch.full_like(self.text_attention_mask_queue, -1)
+
+        self.idx_queue = torch.full_like(self.idx_queue, -100)
+        self.ptr_queue = torch.zeros_like(self.ptr_queue, dtype=torch.long)
+
+    @classmethod
+    def from_pretrained(cls, config):
+        model = cls(config)
+        if config['pretrained']:
+            state_dict = load_checkpoint(model, config['pretrained'])
+            msg = model.load_state_dict(state_dict, strict=False)
+            print("missing keys:")
+            print(msg.missing_keys)
+        model.copy_params()
+        model.set_queue()   # 清空队列，因为新增了两个队列
+        return model
 
 def cosine_lr_schedule(optimizer, epoch, max_epoch, init_lr, min_lr):
     """Decay the learning rate"""
