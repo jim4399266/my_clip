@@ -176,7 +176,7 @@ def train_irtr(pl_module, batch, phase):
 
     # add in-modality g2l loss (in-modality global to local)
     loss_t2t_IM_g2l = in_modality_g2l_loss(text_feat_m_l, text_feat, pl_module.temp, text.attention_mask[:, 1:])
-    loss_i2i_IM_g2l = in_modality_g2l_loss(image_feat_m_l, image_feat, pl_module.temp)
+    loss_i2i_IM_g2l = in_modality_g2l_loss(image_feat_m_l, image_feat, pl_module.temp)#TODO loss太大
 
     # add in-modality g2g loss (in-modality local to local)
     sim_i2i = image_feat @ image_feat_m_all / pl_module.temp
@@ -285,12 +285,13 @@ def train_irtr(pl_module, batch, phase):
     def distance_f(x, y, temp):
         # 点积越大越相似，但这里需要返回距离，因此添加负号
         return -(x @ y.t() / temp)
+    distance_function = functools.partial(distance_f, temp=pl_module.temp)
     loss_triplet_i2t = F.triplet_margin_with_distance_loss(
-        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=1,
-        distance_function=functools.partial(distance_f, temp=pl_module.temp))
+        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=0.1,
+        distance_function=None)
     loss_triplet_t2i = F.triplet_margin_with_distance_loss(
-        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=1,
-        distance_function=functools.partial(distance_f, temp=pl_module.temp))
+        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=0.1,
+        distance_function=None)
     loss_triplet = (loss_triplet_i2t + loss_triplet_t2i) / 2
 
     # 这里实现文本和图片的负样本配对，image_embeds_neg是image_embeds_neg对应的负样本，text_ids_neg是image_embeds对应的负样本
@@ -320,6 +321,13 @@ def train_irtr(pl_module, batch, phase):
     pl_module.log(f"{phase}/irtr/itm_loss", loss_itm)
     pl_module.log(f"{phase}/irtr/triplet_loss", loss_triplet)
     pl_module.log(f"{phase}/irtr/irtr_loss", irtr_loss)
+
+    pl_module.log(f"t/loss_i2t", loss_i2t)
+    pl_module.log(f"t/loss_t2i", loss_t2i)
+    pl_module.log(f"t/loss_i2i_IM_g2l", loss_i2i_IM_g2l)
+    pl_module.log(f"t/loss_t2t_IM_g2l", loss_t2t_IM_g2l)
+    pl_module.log(f"t/loss_t2t", loss_t2t)
+    pl_module.log(f"t/loss_i2i", loss_i2i)
     return irtr_loss
 
 # def train_irtr(pl_module, batch, phase):
@@ -595,7 +603,7 @@ def recall_eval(scores_i2t, scores_t2i, index_mapper):
 
     # Images->Text
     ranks = np.zeros(scores_i2t.shape[0])
-    print(f'Target text len:{ranks}')
+    print(f'Target text len:{len(ranks)}')
     for index, score in enumerate(scores_i2t):
         inds = np.argsort(score)[::-1]
         # Score
