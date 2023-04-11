@@ -129,7 +129,7 @@ if __name__ == '__main__':
         config['train_dataset_len'] = int(100 * config['per_gpu_batchsize'])
         config['val_dataset_len'] = int(50 * config['per_gpu_batchsize'])
         config['test_dataset_len'] = int(50 * config['per_gpu_batchsize'])
-        # config['fast_dev_run'] = 2
+        config['fast_dev_run'] = 2
         config['shuffle'] = False
         config['num_workers'] = 0
     config['optimizer']['betas'] = eval(config['optimizer']['betas'])

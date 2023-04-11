@@ -164,18 +164,18 @@ class RetrievalModule(BaseModule):
         image_len = (config['image_size'] // config['patch_size']) ** 2 + 1
         self.register_buffer("image_queue", torch.randn(self.input_image_embed_size, self.queue_size))
         self.register_buffer("text_queue", torch.randn(self.input_text_embed_size, self.queue_size))
-        # self.register_buffer("image_embed_queue", torch.randn(self.queue_size, image_len, self.vision_width))
-        self.register_buffer("text_input_ids_queue", torch.full((self.queue_size, text_len), -1))
-        self.register_buffer("text_attention_mask_queue", torch.full((self.queue_size, text_len, self.text_width), -1))
         self.register_buffer("idx_queue", torch.full((1, self.queue_size), -100))
         self.register_buffer("ptr_queue", torch.zeros(1, dtype=torch.long))
 
         self.image_queue = nn.functional.normalize(self.image_queue, dim=0)
         self.text_queue = nn.functional.normalize(self.text_queue, dim=0)
-        self.image_embed_queue = nn.functional.normalize(self.image_embed_queue, dim=-1)
 
         # 太大，需要放到CPU，不用 register_buffer
-        self.image_embed_queue = torch.randn(self.queue_size, image_len, self.vision_width)
+        self.image_embed_queue = torch.randn(self.queue_size, image_len, self.vision_width)  #CPU
+        self.image_embed_queue = nn.functional.normalize(self.image_embed_queue, dim=-1)
+        self.text_input_ids_queue = torch.full((self.queue_size, text_len), -1)  #CPU
+        self.text_attention_mask_queue = torch.full((self.queue_size, text_len), -1) #CPU
+
     def reset_queue(self):
         self.image_queue = torch.randn_like(self.image_queue)
         self.image_queue = nn.functional.normalize(self.image_queue, dim=0)
@@ -184,7 +184,7 @@ class RetrievalModule(BaseModule):
 
         self.text_queue = torch.randn_like(self.text_queue)
         self.text_queue = nn.functional.normalize(self.text_queue, dim=0)
-        self.text_input_ids_queque = torch.full_like(self.text_input_ids_queque, -1)
+        self.text_input_ids_queue = torch.full_like(self.text_input_ids_queue, -1)
         self.text_attention_mask_queue = torch.full_like(self.text_attention_mask_queue, -1)
 
         self.idx_queue = torch.full_like(self.idx_queue, -100)

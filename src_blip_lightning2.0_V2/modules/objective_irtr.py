@@ -143,11 +143,10 @@ def train_irtr(pl_module, batch, phase):
     with torch.no_grad():
         pl_module._momentum_update()
         # -------  all image momentum features  -----------
-        # TODO 减少显存占用
         image_embeds_m = pl_module.visual_encoder_m(image)
         image_feat_m = F.normalize(pl_module.vision_proj_m(image_embeds_m[:, 0, :]), dim=-1)
         image_feat_m_all = torch.cat([image_feat_m.t(), pl_module.image_queue.clone().detach()], dim=1)
-        image_embeds_m_all = torch.cat([image_embeds_m, pl_module.image_embed_queue.clone().detach()], dim=0)
+        image_embeds_m_all = torch.cat([image_embeds_m.cpu(), pl_module.image_embed_queue.clone().detach()], dim=0)
         #  momentum image local features
         image_feat_m_l = F.normalize(pl_module.vision_proj_m(image_embeds_m[:, 1:, :]), dim=-1)
         image_feat_m_l = pl_module.patch_pooling(image_feat_m_l)  # pooling for image patches
@@ -157,8 +156,8 @@ def train_irtr(pl_module, batch, phase):
                                             return_dict=True, mode='text')
         text_feat_m = F.normalize(pl_module.text_proj_m(text_output_m.last_hidden_state[:, 0, :]), dim=-1)
         text_feat_m_all = torch.cat([text_feat_m.t(), pl_module.text_queue.clone().detach()], dim=1)
-        text_input_ids_all = torch.cat([text.input_ids, pl_module.text_input_ids_queque.clone().detach()], dim=0)
-        text_attention_mask_all = torch.cat([text.attention_mask, pl_module.text_attention_mask_queue.clone().detach()], dim=0)
+        text_input_ids_all = torch.cat([text.input_ids.cpu(), pl_module.text_input_ids_queue.clone().detach()], dim=0)
+        text_attention_mask_all = torch.cat([text.attention_mask.cpu(), pl_module.text_attention_mask_queue.clone().detach()], dim=0)
         # momentum text local features
         text_feat_m_l = F.normalize(pl_module.text_proj_m(text_output_m.last_hidden_state[:, 1:, :]), dim=-1)
 
@@ -181,7 +180,7 @@ def train_irtr(pl_module, batch, phase):
 
     # add in-modality g2l loss (in-modality global to local)
     loss_t2t_IM_g2l = in_modality_g2l_loss(text_feat_m_l, text_feat, pl_module.temp, text.attention_mask[:, 1:])
-    loss_i2i_IM_g2l = in_modality_g2l_loss(image_feat_m_l, image_feat, pl_module.temp)#TODO loss太大
+    loss_i2i_IM_g2l = in_modality_g2l_loss(image_feat_m_l, image_feat, pl_module.temp)
 
     # add in-modality g2g loss (in-modality local to local)
     sim_i2i = image_feat @ image_feat_m_all / pl_module.temp
@@ -196,22 +195,22 @@ def train_irtr(pl_module, batch, phase):
 
     ## 从所有队列中选择负样本
     bs = image.size(0)
-    mask = torch.eq(idx, idx_all.t())
+    mask = torch.eq(idx, idx_all)
     weights_i2t = F.softmax(sim_i2t, dim=1)
     weights_i2t.masked_fill_(mask, 0)
 
     weights_t2i = F.softmax(sim_t2i, dim=1)
     weights_t2i.masked_fill_(mask, 0)
 
-    # select a negative image (from all ranks) for each text
+    # select a negative image (from all queue) for each text
     image_embeds_neg = []
     image_feat_neg = []  # for triplet loss
     for b in range(bs):
         neg_idx = torch.multinomial(weights_t2i[b], 1).item()
         image_embeds_neg.append(image_embeds_m_all[neg_idx])
-        image_feat_neg.append(image_feat_m[neg_idx])
+        image_feat_neg.append(image_feat_m_all.T[neg_idx])
 
-    # # select a negative text (from all ranks) for each image
+    # # select a negative text (from all queue) for each image
     # input_ids_world = concat_all_gather(encoder_input_ids, pl_module.trainer.world_size)
     # att_mask_world = concat_all_gather(text.attention_mask, pl_module.trainer.world_size)
 
@@ -220,7 +219,7 @@ def train_irtr(pl_module, batch, phase):
     text_feat_neg = []  # for triplet loss
     for b in range(bs):
         neg_idx = torch.multinomial(weights_i2t[b], 1).item()
-        text_feat_neg.append(text_feat_m_all[neg_idx])
+        text_feat_neg.append(text_feat_m_all.T[neg_idx])
         text_ids_neg.append(text_input_ids_all[neg_idx])
         text_atts_neg.append(text_attention_mask_all[neg_idx])
 
@@ -308,11 +307,11 @@ def train_irtr(pl_module, batch, phase):
     #         text_ids_neg.append(encoder_input_ids[neg_idx])
     #         text_atts_neg.append(text.attention_mask[neg_idx])
 
-    image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+    image_embeds_neg = torch.stack(image_embeds_neg, dim=0).to(pl_module.device)
     image_feat_neg = torch.stack(image_feat_neg, dim=0)
 
-    text_ids_neg = torch.stack(text_ids_neg, dim=0)
-    text_atts_neg = torch.stack(text_atts_neg, dim=0)
+    text_ids_neg = torch.stack(text_ids_neg, dim=0).to(pl_module.device)
+    text_atts_neg = torch.stack(text_atts_neg, dim=0).to(pl_module.device)
     text_feat_neg = torch.stack(text_feat_neg, dim=0)
 
     ###============== Image-text Triple ======================
