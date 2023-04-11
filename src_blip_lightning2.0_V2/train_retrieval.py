@@ -110,6 +110,7 @@ def main(args, config):
         trainer.fit(model, datamodule=dm)
         weight_paths = list(trainer.checkpoint_callback.best_k_models.keys())
         # weight_paths = list(Path(checkpoint_callback.dirpath).rglob('*.[pc][tk][hp]*'))
+        print(weight_paths)
         for ckpt in weight_paths:
             trainer.test(model, datamodule=dm, ckpt_path=str(ckpt))
 
@@ -129,7 +130,7 @@ if __name__ == '__main__':
         config['train_dataset_len'] = int(100 * config['per_gpu_batchsize'])
         config['val_dataset_len'] = int(50 * config['per_gpu_batchsize'])
         config['test_dataset_len'] = int(50 * config['per_gpu_batchsize'])
-        # config['fast_dev_run'] = 2
+        config['fast_dev_run'] = 2
         config['shuffle'] = False
         config['num_workers'] = 0
     config['optimizer']['betas'] = eval(config['optimizer']['betas'])

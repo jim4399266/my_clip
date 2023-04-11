@@ -282,16 +282,20 @@ def train_irtr(pl_module, batch, phase):
     text_feat_neg = torch.stack(text_feat_neg, dim=0)
 
     ###============== Image-text Triple ======================
-    def distance_f(x, y, temp):
-        # 点积越大越相似，但这里需要返回距离，因此添加负号
-        return -(x @ y.t() / temp)
-    distance_function = functools.partial(distance_f, temp=pl_module.temp)
+    # def distance_f(x, y, temp):
+    #     # 点积越大越相似，但这里需要返回距离，因此添加负号
+    #     return -(x @ y.t() / temp)
+    # distance_function = functools.partial(distance_f, temp=pl_module.temp)
+    #
+    def distance_f(x, y, temp, p):
+        return torch.pairwise_distance(x, y, p) / temp
+    distance_function = functools.partial(distance_f, temp=pl_module.temp, p=2)
     loss_triplet_i2t = F.triplet_margin_with_distance_loss(
-        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=0.1,
-        distance_function=None)
+        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=5,
+        distance_function=distance_function)
     loss_triplet_t2i = F.triplet_margin_with_distance_loss(
-        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=0.1,
-        distance_function=None)
+        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=5,
+        distance_function=distance_function)
     loss_triplet = (loss_triplet_i2t + loss_triplet_t2i) / 2
 
     # 这里实现文本和图片的负样本配对，image_embeds_neg是image_embeds_neg对应的负样本，text_ids_neg是image_embeds对应的负样本
