@@ -288,13 +288,13 @@ def train_irtr(pl_module, batch, phase):
     # distance_function = functools.partial(distance_f, temp=pl_module.temp)
     #
     def distance_f(x, y, temp, p):
-        return torch.pairwise_distance(x, y, p) / temp
+        return torch.pairwise_distance(x, y, p)
     distance_function = functools.partial(distance_f, temp=pl_module.temp, p=2)
     loss_triplet_i2t = F.triplet_margin_with_distance_loss(
-        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=5,
+        anchor=image_feat, positive=text_feat, negative=text_feat_neg, margin=0.5,
         distance_function=distance_function)
     loss_triplet_t2i = F.triplet_margin_with_distance_loss(
-        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=5,
+        anchor=text_feat, positive=image_feat, negative=image_feat_neg, margin=0.5,
         distance_function=distance_function)
     loss_triplet = (loss_triplet_i2t + loss_triplet_t2i) / 2
 
